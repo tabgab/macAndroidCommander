@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const fs = require('fs');
 const util = require('util');
 
@@ -21,17 +21,58 @@ function createWindow() {
 
     mainWindow.loadFile('index.html');
     // mainWindow.webContents.openDevTools(); // Open DevTools for debugging
+    return mainWindow;
+}
+
+
+
+// ... (existing imports)
+
+let adbTrackerProcess = null;
+
+function startDeviceTracking(mainWindow) {
+    if (adbTrackerProcess) return;
+
+    console.log('Starting ADB device tracking...');
+    // adb track-devices prints output whenever device state changes
+    adbTrackerProcess = spawn('adb', ['track-devices']);
+
+    adbTrackerProcess.stdout.on('data', (data) => {
+        console.log(`ADB Tracker: Device list changed`);
+        // Debounce or just emit? Just emit for now, renderer can handle it.
+        // We send the event to the renderer, which will then call list-devices
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('device-list-changed');
+        }
+    });
+
+    adbTrackerProcess.stderr.on('data', (data) => {
+        console.error(`ADB Tracker Error: ${data}`);
+    });
+
+    adbTrackerProcess.on('close', (code) => {
+        console.log(`ADB Tracker exited with code ${code}`);
+        adbTrackerProcess = null;
+        // Optional: Restart logic if it crashes unexpectedly
+    });
 }
 
 app.whenReady().then(() => {
-    createWindow();
+    const mainWindow = createWindow();
+    startDeviceTracking(mainWindow);
 
     app.on('activate', function () {
-        if (BrowserWindow.getAllWindows().length === 0) createWindow();
+        if (BrowserWindow.getAllWindows().length === 0) {
+            const win = createWindow();
+            startDeviceTracking(win);
+        }
     });
 });
 
 app.on('window-all-closed', function () {
+    if (adbTrackerProcess) {
+        adbTrackerProcess.kill();
+    }
     if (process.platform !== 'darwin') app.quit();
 });
 

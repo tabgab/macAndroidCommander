@@ -33,6 +33,12 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Focus left pane by default
     localFileList.focus();
     activePane = 'local';
+
+    // Listen for device changes
+    window.electronAPI.onDeviceListChanged(async () => {
+        console.log('Device list changed, refreshing...');
+        await refreshDevices();
+    });
 });
 
 // Device Management
@@ -48,22 +54,46 @@ async function refreshDevices() {
             return;
         }
 
+        let unauthorizedDevice = null;
+
         devices.forEach(d => {
             const option = document.createElement('option');
             option.value = d.serial;
             option.textContent = `${d.serial} (${d.state})`;
             deviceSelect.appendChild(option);
+
+            if (d.state === 'unauthorized') unauthorizedDevice = d;
         });
 
-        // Auto-select first device if none selected or current not found
-        if (!currentDeviceSerial || !devices.find(d => d.serial === currentDeviceSerial)) {
-            currentDeviceSerial = devices[0].serial;
-            deviceSelect.value = currentDeviceSerial;
+        // Auto-select logic
+        // 1. If current device is still there, keep it.
+        // 2. If current device is gone, pick the first available authorized device.
+        // 3. If only unauthorized devices, show help.
+
+        const currentStillExists = currentDeviceSerial && devices.find(d => d.serial === currentDeviceSerial);
+
+        if (!currentStillExists) {
+            const firstAuthorized = devices.find(d => d.state === 'device');
+            if (firstAuthorized) {
+                currentDeviceSerial = firstAuthorized.serial;
+                deviceSelect.value = currentDeviceSerial;
+                hideHelpModal(); // Hide help if we found a good device
+            } else if (unauthorizedDevice) {
+                // Only unauthorized devices found
+                currentDeviceSerial = null;
+                showHelpModal('unauthorized');
+                return;
+            } else {
+                // Should be covered by devices.length === 0 check, but just in case
+                currentDeviceSerial = null;
+            }
         } else {
             deviceSelect.value = currentDeviceSerial;
         }
 
-        await loadAndroidFiles(currentAndroidPath);
+        if (currentDeviceSerial) {
+            await loadAndroidFiles(currentAndroidPath);
+        }
     } catch (e) {
         console.error('Error refreshing devices:', e);
     }
@@ -78,7 +108,43 @@ deviceSelect.addEventListener('change', (e) => {
     }
 });
 
-function showHelpModal() {
+function showHelpModal(state = 'no-device') {
+    const helpContent = document.querySelector('#help-modal .modal-content');
+    if (state === 'unauthorized') {
+        helpContent.innerHTML = `
+            <span class="close-button">&times;</span>
+            <h2>Device Unauthorized</h2>
+            <p>A device is connected but not authorized.</p>
+            <ol>
+                <li>Check your Android device screen.</li>
+                <li>Look for a "Allow USB debugging?" prompt.</li>
+                <li>Tap <strong>Allow</strong> (and optionally "Always allow...").</li>
+            </ol>
+            <button id="btn-retry-devices">Retry Connection</button>
+        `;
+    } else {
+        // Default No Device content
+        helpContent.innerHTML = `
+            <span class="close-button">&times;</span>
+            <h2>No Android Device Found</h2>
+            <p>Please ensure:</p>
+            <ol>
+                <li>Android device is connected via USB.</li>
+                <li><strong>Developer Options</strong> are enabled on the phone.</li>
+                <li><strong>USB Debugging</strong> is turned ON.</li>
+                <li>File Transfer mode (MTP) is selected (sometimes required).</li>
+            </ol>
+            <button id="btn-retry-devices">Retry Connection</button>
+        `;
+    }
+
+    // Re-attach listeners since we overwrote innerHTML
+    helpContent.querySelector('.close-button').onclick = hideHelpModal;
+    helpContent.querySelector('#btn-retry-devices').onclick = async () => {
+        hideHelpModal();
+        await refreshDevices();
+    };
+
     helpModal.style.display = 'flex';
 }
 

@@ -11,5 +11,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     readLocalFile: (path) => ipcRenderer.invoke('read-local-file', path),
     saveLocalFile: (path, content) => ipcRenderer.invoke('save-local-file', path, content),
     readAndroidFile: (path, deviceSerial) => ipcRenderer.invoke('read-android-file', path, deviceSerial),
-    saveAndroidFile: (path, content, deviceSerial) => ipcRenderer.invoke('save-android-file', path, content, deviceSerial)
+    saveAndroidFile: (path, content, deviceSerial) => ipcRenderer.invoke('save-android-file', path, content, deviceSerial),
+    onDeviceListChanged: (callback) => ipcRenderer.on('device-list-changed', callback)
 });
