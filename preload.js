@@ -12,5 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     saveLocalFile: (path, content) => ipcRenderer.invoke('save-local-file', path, content),
     readAndroidFile: (path, deviceSerial) => ipcRenderer.invoke('read-android-file', path, deviceSerial),
     saveAndroidFile: (path, content, deviceSerial) => ipcRenderer.invoke('save-android-file', path, content, deviceSerial),
-    onDeviceListChanged: (callback) => ipcRenderer.on('device-list-changed', callback)
+    onDeviceListChanged: (callback) => ipcRenderer.on('device-list-changed', callback),
+    openExternal: (path) => ipcRenderer.invoke('open-external', path),
+    pullTempAndroid: (path, deviceSerial) => ipcRenderer.invoke('pull-temp-android', path, deviceSerial)
 });

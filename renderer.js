@@ -292,10 +292,28 @@ async function performViewEdit(isEdit) {
     const file = activePane === 'local' ? selectedLocalFile : selectedAndroidFile;
     if (!file || file.isDirectory) return alert('Please select a file.');
 
-    const binaryExtensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.zip', '.tar', '.gz', '.apk', '.exe', '.bin', '.iso', '.mp4', '.mp3', '.wav', '.dmg'];
+    const binaryExtensions = [
+        '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.zip', '.tar', '.gz', '.apk', '.exe', '.bin', '.iso', '.mp4', '.mp3', '.wav', '.dmg',
+        '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'
+    ];
     const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
     if (binaryExtensions.includes(ext)) {
-        return alert(`Cannot open binary file (${ext}) in text editor.`);
+        if (confirm(`This is not a text file (${ext}). Open in default system viewer?`)) {
+            try {
+                showProgress('Opening...', `Opening ${file.name}`);
+                if (activePane === 'local') {
+                    await window.electronAPI.openExternal(file.path);
+                } else {
+                    const tempPath = await window.electronAPI.pullTempAndroid(file.path, currentDeviceSerial);
+                    await window.electronAPI.openExternal(tempPath);
+                }
+            } catch (e) {
+                alert('Failed to open file: ' + e);
+            } finally {
+                hideProgress();
+            }
+        }
+        return;
     }
 
     try {

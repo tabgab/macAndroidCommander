@@ -10,7 +10,7 @@ A Midnight Commander-inspired dual-pane file manager for macOS and Android. Mana
 *   **Android Integration**: Seamlessly browse, copy, and delete files on connected Android devices via ADB.
 *   **Keyboard Navigation**: Fully navigable using keyboard shortcuts (Arrows, Tab, Enter).
 *   **File Operations**:
-    *   **F3 View**: Quick look at text files.
+    *   **F3 View**: Quick look at text files. Opens non-text files (PDF, Images, Office docs) in the default system application.
     *   **F4 Edit**: Edit text files directly (saves back to Android).
     *   **F5 Copy**: Copy files/directories between Mac and Android.
     *   **F8 Delete**: Delete files/directories.

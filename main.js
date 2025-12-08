@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const { exec, spawn } = require('child_process');
 const fs = require('fs');
@@ -346,6 +346,32 @@ ipcMain.handle('save-android-file', async (event, filePath, content, deviceSeria
         return true;
     } catch (error) {
         console.error('Error saving android file:', error);
+        throw error;
+    }
+});
+
+// System Viewer Integration
+ipcMain.handle('open-external', async (event, filePath) => {
+    try {
+        await shell.openPath(filePath);
+        return true;
+    } catch (error) {
+        console.error('Error opening external file:', error);
+        throw error;
+    }
+});
+
+ipcMain.handle('pull-temp-android', async (event, filePath, deviceSerial) => {
+    try {
+        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const ext = path.extname(filePath);
+        const tempName = `temp_view_${Date.now()}_${Math.random().toString(36).substring(7)}${ext}`;
+        const tempPath = path.join(app.getPath('temp'), tempName);
+
+        await execPromise(`adb ${serialCmd} pull "${filePath}" "${tempPath}"`);
+        return tempPath;
+    } catch (error) {
+        console.error('Error pulling temp android file:', error);
         throw error;
     }
 });
