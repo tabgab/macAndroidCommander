@@ -1,0 +1,24 @@
+{
+  "name": "mac-android-commander",
+  "version": "1.0.0",
+  "description": "A Midnight Commander style file manager for Mac and Android via ADB",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "keywords": [
+    "electron",
+    "adb",
+    "file-manager",
+    "android",
+    "mac"
+  ],
+  "author": "Antigravity",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  }
+}

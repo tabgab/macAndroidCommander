@@ -1,0 +1,8 @@
+Reqirements and specifications for Mac_Android_Commander	
+
+This is a simple file manager-style app that runs on macOS, and makes use of ADB to access file operations on a connected Android device.
+
+The interface is very similar to the MC (Midnight Commander) interface, with very similar functions. Two "panes" displaying the file hierarchy in the Mac and the connected Android Device. File operations: Copy, Move, Delete, Read, Edit, just like in the original.
+We should be able to change the views in the panes and navigate the file hierarchy, just as in MC.
+
+Choose the best technical solution to be able to make use of ADB's functionality, as macOS does not always "play nice" with Android phones, but once ADB is installed, one can work with the connected devices using ADB's functions. Test if this is a good approach and if it is feasible to produce such an application. You can use whatever you want as a language, just keep it simple, effective, and it should work.

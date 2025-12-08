@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Mac Android Commander</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <div id="container">
+        <div id="left-pane" class="pane">
+            <div class="pane-header">
+                <span id="local-path">/</span>
+            </div>
+            <div class="file-list" id="local-file-list" tabindex="0">
+                <!-- Files will be populated here -->
+            </div>
+        </div>
+        <div id="right-pane" class="pane">
+            <div class="pane-header">
+                <select id="device-select" style="max-width: 150px; margin-right: 5px;">
+                    <option value="">Select Device...</option>
+                </select>
+                <span id="android-path">/sdcard/</span>
+            </div>
+            <div class="file-list" id="android-file-list" tabindex="0">
+                <!-- Files will be populated here -->
+            </div>
+        </div>
+    </div>
+    <div id="footer">
+        <button id="btn-view">F3 View</button>
+        <button id="btn-edit">F4 Edit</button>
+        <button id="btn-copy">F5 Copy</button>
+        <button id="btn-delete">F8 Delete</button>
+        <button id="btn-exit">F10 Exit</button>
+        <button id="btn-refresh">Refresh</button>
+    </div>
+
+    <!-- Editor Modal -->
+    <div id="editor-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="width: 90%; height: 90%; display: flex; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <span id="editor-filename" style="font-weight: bold;">Filename.txt</span>
+                <span class="close-button" id="close-editor">&times;</span>
+            </div>
+            <textarea id="editor-textarea"
+                style="flex: 1; background-color: #222; color: #eee; font-family: monospace; padding: 10px; border: 1px solid #555; resize: none;"></textarea>
+            <div style="margin-top: 10px; text-align: right;">
+                <button id="btn-save-file">Save</button>
+                <button id="btn-close-editor">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Progress Modal -->
+    <div id="progress-modal" class="modal" style="display: none; z-index: 2000;">
+        <div class="modal-content" style="text-align: center;">
+            <h3 id="progress-title">Processing...</h3>
+            <div class="spinner"
+                style="margin: 20px auto; width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite;">
+            </div>
+            <p id="progress-message">Please wait.</p>
+        </div>
+    </div>
+
+    <!-- Help Modal -->
+    <div id="help-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span class="close-button">&times;</span>
+            <h2>No Android Device Found</h2>
+            <p>Please ensure your Android device is connected via USB.</p>
+            <h3>Troubleshooting:</h3>
+            <ol>
+                <li><strong>Enable Developer Options:</strong> Go to Settings > About Phone > Tap "Build Number" 7
+                    times.</li>
+                <li><strong>Enable USB Debugging:</strong> Go to Settings > System > Developer Options > Enable "USB
+                    Debugging".</li>
+                <li><strong>Authorize Computer:</strong> Check your phone screen for a prompt to allow USB debugging
+                    from this computer.</li>
+                <li><strong>Check Cable:</strong> Ensure you are using a data-capable USB cable.</li>
+            </ol>
+            <button id="btn-retry-devices">Retry Connection</button>
+        </div>
+    </div>
+    <script src="renderer.js"></script>
+</body>
+
+</html>
