@@ -43,6 +43,14 @@ body {
     justify-content: center;
 }
 
+.device-select {
+    max-width: 150px;
+    margin-right: 10px;
+    background-color: #eee;
+    color: #333;
+    border: 1px solid #999;
+}
+
 .file-list {
     flex: 1;
     overflow-y: auto;
@@ -61,7 +69,21 @@ body {
     padding: 2px 5px;
     white-space: nowrap;
     overflow: hidden;
+    display: flex;
+    justify-content: space-between;
+}
+
+.file-name {
+    flex-grow: 1;
+    overflow: hidden;
     text-overflow: ellipsis;
+    margin-right: 10px;
+}
+
+.file-size {
+    width: 80px;
+    text-align: right;
+    flex-shrink: 0;
 }
 
 .file-item:hover {

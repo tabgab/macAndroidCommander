@@ -128,16 +128,38 @@ ipcMain.handle('list-devices', async () => {
     }
 });
 
+const quoteForRemote = (path) => {
+    // Wrap in double quotes for Android shell, escape internal double quotes and backticks
+    // We assume the local shell execution will handle the outer wrapping if we passed it correctly?
+    // Wait, we are using execPromise with a string.
+    // The string we return here must be safe to pass to the LOCAL shell inside double quotes? No.
+    // Let's rely on a helper that constructs the final command string parts.
+    return '"' + path.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$') + '"';
+};
+
+// However, passing complex quotes to exec is painful. 
+// A robust way for exec: wrap the argument in single quotes for the local shell.
+const escapeLocal = (s) => {
+    return "'" + s.replace(/'/g, "'\\''") + "'";
+};
+
+const quote = (path) => {
+    // 1. Prepare for Remote: "path" (escaped)
+    const remote = '"' + path.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$') + '"';
+    // 2. Prepare for Local: 'remote' (escaped)
+    return escapeLocal(remote);
+};
+
+
 // List Android Files
 ipcMain.handle('list-android-files', async (event, dirPath, deviceSerial) => {
     try {
-        // Use -L to dereference symlinks if needed, or just ls -l
-        // -p appends / to directories, making it easier to parse? 
-        // ls -l is standard.
-        // Note: Android ls output format can vary slightly between versions/toybox/busybox.
-        // We'll try a generic parsing approach.
         const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
-        const { stdout } = await execPromise(`adb ${serialCmd} shell ls -l "${dirPath}"`);
+        // adb shell ls -l "path"
+        // usage: adb shell ls -l <quoted_path>
+
+        const safePath = quote(dirPath); // This produces ' "path" '
+        const { stdout } = await execPromise(`adb ${serialCmd} shell ls -l ${safePath}`);
 
         // Parse stdout
         const lines = stdout.split('\n');
@@ -154,44 +176,20 @@ ipcMain.handle('list-android-files', async (event, dirPath, deviceSerial) => {
             const permissions = parts[0];
             const isDirectory = permissions.startsWith('d');
 
-            // Finding where the date/time ends and name begins is tricky with just split.
-            // Let's assume standard `ls -l` format:
-            // [perms] [links] [owner] [group] [size] [date] [time] [name...]
+            let size = 0;
+            // Parse size if it's a file
+            // standard: [perms] [links] [owner] [group] [size] [date] [time] [name]
+            if (!isDirectory && parts.length >= 5) {
+                size = parseInt(parts[4], 10) || 0;
+            }
 
             // If we assume the first 7 fields are metadata, the rest is name.
-            // But date format varies.
-
-            // Alternative: `adb shell ls -p` gives names with / for dirs.
-            // But we want details (size, date).
-
-            // Let's try `ls -pl` if supported, or just `ls -l` and do best effort.
-            // Ideally we'd use `ls -lA` to get hidden files too.
-
-            // For now, let's just return the raw line or a simple object and refine parsing later.
-            // Let's try to extract name and isDir.
-
-            let nameStartIndex = 0;
-            // Skip first 5-6 parts?
-            // This is fragile.
-
-            // Better approach for name: `adb shell ls -1` to get just names, then `stat`? Too slow.
-            // `adb shell ls -l` is best.
-
-            // Let's just return the raw line for now to the renderer to debug, 
-            // OR implement a better parser.
-            // Let's try to parse the name from the end.
-
-            // Common Android ls:
-            // drwxrwx--x 3 root sdcard_rw 4096 2024-01-20 12:00 Android
-
-            // If we assume the date is in parts[5] and parts[6] (YYYY-MM-DD HH:MM), 
-            // then name starts at parts[7].
-
             if (parts.length >= 8) {
                 const name = parts.slice(7).join(' ');
                 return {
                     name: name,
                     isDirectory: isDirectory,
+                    size: size,
                     details: line // pass full line for debug/display
                 };
             }
@@ -208,40 +206,63 @@ ipcMain.handle('list-android-files', async (event, dirPath, deviceSerial) => {
 
 // File Operations
 
+// File Operations
+
 ipcMain.handle('copy-to-android', async (event, localPath, androidPath, deviceSerial) => {
     try {
         const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
         const stats = await statPromise(localPath);
+        // Note: For 'push', adb handles local path quotes locally (passed as arg to spawn if we used spawn, but here exec).
+        // For remote path, it must be quoted for remote shell?
+        // Actually, 'adb push' takes local and remote paths as arguments to ADB, NOT to a remote shell.
+        // So standard local quoting rules apply for both.
+        // Wait, 'adb push local remote'. Remote path is interpreted by adb server on device?
+        // Usually adb push handles spaces if arguments are passed correctly to adb binary.
+        // With execPromise(`adb push "local" "remote"`), local shell handles quotes, adb gets args.
+        // ADB handles spaces in remote path fine usually.
+        // BUT if remote path has specials, might be tricky.
+        // Let's assume standard quotes work for push/pull as they are not 'adb shell' commands.
+        // execPromise handles local shell quoting.
+
+        // HOWEVER, we should escape double quotes in the paths for the LOCAL shell if we wrap them in double quotes.
+        // const safeLocal = `"${localPath.replace(/"/g, '\\"')}"`;
+        // const safeRemote = `"${androidPath.replace(/"/g, '\\"')}"`;
+        // BETTER: Use our escapeLocal helper? No, that wraps in single quotes.
+
+        // Let's stick to standard double quotes with escape for push/pull as confirmed working for standard files?
+        // Or use escapeLocal for maximum safety on Mac/Linux.
+
+        const safeLocal = escapeLocal(localPath);
+        const safeRemote = escapeLocal(androidPath);
 
         if (stats.isDirectory()) {
-            // Strategy: Create temp tarball locally (dereferencing symlinks), push it, extract, delete.
-            // This avoids pipe issues and "remote symlink failed" errors.
-
             const localDir = path.dirname(localPath);
             const localName = path.basename(localPath);
             const tempTarName = `temp_copy_${Date.now()}.tar`;
             const tempTarPath = path.join(app.getPath('temp'), tempTarName);
-            const androidTempPath = `/data/local/tmp/${tempTarName}`; // /data/local/tmp is usually writable and good for temps
-            const androidDestDir = path.dirname(androidPath); // Parent of destination
+            const androidTempPath = `/data/local/tmp/${tempTarName}`;
+            const androidDestDir = path.dirname(androidPath);
 
-            // 1. Create local tarball with dereferenced symlinks (-h)
-            // We cd to localDir so the tarball contains 'localName' at root
-            await execPromise(`cd "${localDir}" && tar -chf "${tempTarPath}" "${localName}"`);
+            // Tar command runs locally
+            const safeTempTarPath = escapeLocal(tempTarPath);
+            const safeLocalDir = escapeLocal(localDir);
+            const safeLocalName = escapeLocal(localName);
 
-            // 2. Push tarball to Android
-            await execPromise(`adb ${serialCmd} push "${tempTarPath}" "${androidTempPath}"`);
+            await execPromise(`cd ${safeLocalDir} && tar -chf ${safeTempTarPath} ${safeLocalName}`);
+            await execPromise(`adb ${serialCmd} push ${safeTempTarPath} ${escapeLocal(androidTempPath)}`);
 
-            // 3. Extract on Android
-            // We mkdir -p the destination parent, then cd there and extract
-            await execPromise(`adb ${serialCmd} shell "mkdir -p '${androidDestDir}' && cd '${androidDestDir}' && tar -xf '${androidTempPath}'"`);
+            // Extract on Android: adb shell ...
+            // These ARE shell commands so they need 'quote()'
+            const safeAndroidDestDir = quote(androidDestDir);
+            const safeAndroidTempPath = quote(androidTempPath);
 
-            // 4. Cleanup
+            await execPromise(`adb ${serialCmd} shell "mkdir -p ${safeAndroidDestDir} && cd ${safeAndroidDestDir} && tar -xf ${safeAndroidTempPath}"`);
+
             await util.promisify(fs.unlink)(tempTarPath);
-            await execPromise(`adb ${serialCmd} shell rm "${androidTempPath}"`);
+            await execPromise(`adb ${serialCmd} shell rm ${safeAndroidTempPath}`);
 
         } else {
-            // Use adb push for single files
-            await execPromise(`adb ${serialCmd} push "${localPath}" "${androidPath}"`);
+            await execPromise(`adb ${serialCmd} push ${safeLocal} ${safeRemote}`);
         }
         return true;
     } catch (error) {
@@ -250,11 +271,40 @@ ipcMain.handle('copy-to-android', async (event, localPath, androidPath, deviceSe
     }
 });
 
+ipcMain.handle('copy-local-local', async (event, sourcePath, destPath) => {
+    try {
+        // Node 16.7.0+ supports fs.cp for recursive copy
+        // Or we use cp -R via exec for simplicity/robustness on unix?
+        // Let's use fs.cp if available, or fallback.
+        // Electron usually has modern node.
+        await util.promisify(fs.cp)(sourcePath, destPath, { recursive: true });
+        return true;
+    } catch (error) {
+        console.error('Error copying local-local:', error);
+        throw error;
+    }
+});
+
+ipcMain.handle('copy-android-android', async (event, sourcePath, destPath, deviceSerial) => {
+    try {
+        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const safeSource = quote(sourcePath);
+        const safeDest = quote(destPath);
+        // Note: cp -r on Android (Toybox) works usually.
+        await execPromise(`adb ${serialCmd} shell cp -r ${safeSource} ${safeDest}`);
+        return true;
+    } catch (error) {
+        console.error('Error copying android-android:', error);
+        throw error;
+    }
+});
+
 ipcMain.handle('copy-to-mac', async (event, androidPath, localPath, deviceSerial) => {
     try {
         const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
-        // adb pull <remote> <local>
-        await execPromise(`adb ${serialCmd} pull "${androidPath}" "${localPath}"`);
+        const safeAndroid = escapeLocal(androidPath);
+        const safeLocal = escapeLocal(localPath);
+        await execPromise(`adb ${serialCmd} pull ${safeAndroid} ${safeLocal}`);
         return true;
     } catch (error) {
         console.error('Error copying to mac:', error);
@@ -280,13 +330,62 @@ ipcMain.handle('delete-local', async (event, filePath) => {
 ipcMain.handle('delete-android', async (event, filePath, deviceSerial) => {
     try {
         const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
-        // adb shell rm -rf <path>
-        // Quote path to handle spaces
-        await execPromise(`adb ${serialCmd} shell rm -rf "${filePath}"`);
+        const safePath = quote(filePath);
+        await execPromise(`adb ${serialCmd} shell rm -rf ${safePath}`);
         return true;
     } catch (error) {
         console.error('Error deleting android file:', error);
         throw error;
+    }
+});
+
+ipcMain.handle('rename-local', async (event, oldPath, newPath) => {
+    try {
+        await util.promisify(fs.rename)(oldPath, newPath);
+        return true;
+    } catch (error) {
+        console.error('Error renaming local file:', error);
+        throw error;
+    }
+});
+
+ipcMain.handle('rename-android', async (event, oldPath, newPath, deviceSerial) => {
+    try {
+        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const safeOld = quote(oldPath);
+        const safeNew = quote(newPath);
+        await execPromise(`adb ${serialCmd} shell mv ${safeOld} ${safeNew}`);
+        return true;
+    } catch (error) {
+        console.error('Error renaming android file:', error);
+        throw error;
+    }
+});
+
+ipcMain.handle('get-local-dir-size', async (event, dirPath) => {
+    try {
+        const safePath = escapeLocal(dirPath);
+        const { stdout } = await execPromise(`du -k -d 0 ${safePath}`);
+        const sizeStr = stdout.split(/\s+/)[0];
+        const sizeKB = parseInt(sizeStr, 10);
+        return sizeKB * 1024;
+    } catch (error) {
+        console.error('Error getting local dir size:', error);
+        return 0;
+    }
+});
+
+ipcMain.handle('get-android-dir-size', async (event, dirPath, deviceSerial) => {
+    try {
+        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const safePath = quote(dirPath);
+        const { stdout } = await execPromise(`adb ${serialCmd} shell du -k -d 0 ${safePath}`);
+        const sizeStr = stdout.split(/\s+/)[0];
+        const sizeKB = parseInt(sizeStr, 10);
+        return sizeKB * 1024;
+    } catch (error) {
+        console.error('Error getting android dir size:', error);
+        return 0;
     }
 });
 

@@ -11,20 +11,23 @@
     <div id="container">
         <div id="left-pane" class="pane">
             <div class="pane-header">
-                <span id="local-path">/</span>
+                <select id="left-device-select" class="device-select">
+                    <option value="local">Mac (Local)</option>
+                </select>
+                <span id="left-path">/</span>
             </div>
-            <div class="file-list" id="local-file-list" tabindex="0">
+            <div class="file-list" id="left-file-list" tabindex="0">
                 <!-- Files will be populated here -->
             </div>
         </div>
         <div id="right-pane" class="pane">
             <div class="pane-header">
-                <select id="device-select" style="max-width: 150px; margin-right: 5px;">
-                    <option value="">Select Device...</option>
+                <select id="right-device-select" class="device-select">
+                    <option value="local">Mac (Local)</option>
                 </select>
-                <span id="android-path">/sdcard/</span>
+                <span id="right-path">/</span>
             </div>
-            <div class="file-list" id="android-file-list" tabindex="0">
+            <div class="file-list" id="right-file-list" tabindex="0">
                 <!-- Files will be populated here -->
             </div>
         </div>
@@ -33,7 +36,9 @@
         <button id="btn-view">F3 View</button>
         <button id="btn-edit">F4 Edit</button>
         <button id="btn-copy">F5 Copy</button>
+        <button id="btn-rename">F7 Rename</button>
         <button id="btn-delete">F8 Delete</button>
+        <button id="btn-size">F9 Size</button>
         <button id="btn-exit">F10 Exit</button>
         <button id="btn-refresh">Refresh</button>
     </div>
@@ -84,6 +89,21 @@
             <button id="btn-retry-devices">Retry Connection</button>
         </div>
     </div>
+    <!-- Rename Modal -->
+    <div id="rename-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span class="close-button" id="close-rename">&times;</span>
+            <h2>Rename</h2>
+            <input type="text" id="rename-input"
+                style="width: 100%; padding: 5px; margin-bottom: 10px; background: #222; color: white; border: 1px solid #555;"
+                placeholder="New Name">
+            <div style="text-align: right;">
+                <button id="btn-confirm-rename">Rename</button>
+                <button id="btn-cancel-rename">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <script src="renderer.js"></script>
 </body>
 

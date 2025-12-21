@@ -1,16 +1,31 @@
 
-let currentLocalPath = '/';
-let currentAndroidPath = '/sdcard/';
-let selectedLocalFile = null;
-let selectedAndroidFile = null;
-let currentDeviceSerial = null;
-let activePane = 'local'; // 'local' or 'android'
+// State Management
+const panes = {
+    left: {
+        id: 'left',
+        type: 'local', // 'local' or 'android'
+        path: '/',
+        history: [],
+        selection: null,
+        serial: null, // serial for android
+        element: document.getElementById('left-file-list'),
+        pathDisplay: document.getElementById('left-path'),
+        selectElement: document.getElementById('left-device-select')
+    },
+    right: {
+        id: 'right',
+        type: 'android',
+        path: '/sdcard/',
+        history: [],
+        selection: null,
+        serial: null,
+        element: document.getElementById('right-file-list'),
+        pathDisplay: document.getElementById('right-path'),
+        selectElement: document.getElementById('right-device-select')
+    }
+};
 
-const localFileList = document.getElementById('local-file-list');
-const androidFileList = document.getElementById('android-file-list');
-const localPathDisplay = document.getElementById('local-path');
-const androidPathDisplay = document.getElementById('android-path');
-const deviceSelect = document.getElementById('device-select');
+let activePaneId = 'left';
 const helpModal = document.getElementById('help-modal');
 const closeHelpBtn = document.querySelector('.close-button');
 const retryBtn = document.getElementById('btn-retry-devices');
@@ -22,147 +37,285 @@ const btnSaveFile = document.getElementById('btn-save-file');
 const btnCloseEditor = document.getElementById('btn-close-editor');
 const closeEditorX = document.getElementById('close-editor');
 
-let currentEditingFile = null; // { type: 'local'|'android', path: '...', name: '...' }
+
+// Rename Modal
+const renameModal = document.getElementById('rename-modal');
+const renameInput = document.getElementById('rename-input');
+const btnConfirmRename = document.getElementById('btn-confirm-rename');
+const btnCancelRename = document.getElementById('btn-cancel-rename');
+const closeRenameX = document.getElementById('close-rename');
+
+let fileToRename = null; // { paneId: 'left'|'right', path: '...', name: '...' }
+
+function formatBytes(bytes, decimals = 2) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
 
 // Initial Load
 window.addEventListener('DOMContentLoaded', async () => {
-    currentLocalPath = '/Users/gabortabi';
-    await loadLocalFiles(currentLocalPath);
+    panes.left.path = '/Users/gabortabi'; // Default local start
+
+    // Focus default
+    panes.left.element.focus();
+    activePaneId = 'left';
+
+    // Refresh devices to populate dropdowns, then load files
     await refreshDevices();
+});
 
-    // Focus left pane by default
-    localFileList.focus();
-    activePane = 'local';
-
-    // Listen for device changes
-    window.electronAPI.onDeviceListChanged(async () => {
-        console.log('Device list changed, refreshing...');
-        await refreshDevices();
-    });
+// Listen for device changes
+window.electronAPI.onDeviceListChanged(async () => {
+    console.log('Device list changed, refreshing...');
+    await refreshDevices();
 });
 
 // Device Management
+
 async function refreshDevices() {
     try {
         const devices = await window.electronAPI.listDevices();
-        deviceSelect.innerHTML = '<option value="">Select Device...</option>';
 
-        if (devices.length === 0) {
-            showHelpModal();
-            androidFileList.innerHTML = '<div class="error">No devices found</div>';
-            currentDeviceSerial = null;
-            return;
-        }
+        // Update global device tracker if needed, but primarily update dropdowns
+        const deviceOptions = devices.map(d => ({
+            value: d.serial,
+            label: `${d.serial} (${d.state})`
+        }));
 
-        let unauthorizedDevice = null;
+        // Helper to populate select
+        const populateSelect = (paneId) => {
+            const pane = panes[paneId];
+            const select = pane.selectElement;
+            const currentValue = select.value;
 
-        devices.forEach(d => {
-            const option = document.createElement('option');
-            option.value = d.serial;
-            option.textContent = `${d.serial} (${d.state})`;
-            deviceSelect.appendChild(option);
+            select.innerHTML = '<option value="local">Mac (Local)</option>';
+            deviceOptions.forEach(opt => {
+                const option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.label;
+                select.appendChild(option);
+            });
 
-            if (d.state === 'unauthorized') unauthorizedDevice = d;
-        });
+            // Restore selection if possible, else default to... local? 
+            // Or if pane was android and device is gone, switch to local?
 
-        // Auto-select logic
-        // 1. If current device is still there, keep it.
-        // 2. If current device is gone, pick the first available authorized device.
-        // 3. If only unauthorized devices, show help.
+            // If pane type is local, value should be 'local'.
+            // If pane type is android, value should be serial.
 
-        const currentStillExists = currentDeviceSerial && devices.find(d => d.serial === currentDeviceSerial);
-
-        if (!currentStillExists) {
-            const firstAuthorized = devices.find(d => d.state === 'device');
-            if (firstAuthorized) {
-                currentDeviceSerial = firstAuthorized.serial;
-                deviceSelect.value = currentDeviceSerial;
-                hideHelpModal(); // Hide help if we found a good device
-            } else if (unauthorizedDevice) {
-                // Only unauthorized devices found
-                currentDeviceSerial = null;
-                showHelpModal('unauthorized');
-                return;
-            } else {
-                // Should be covered by devices.length === 0 check, but just in case
-                currentDeviceSerial = null;
+            if (pane.type === 'local') {
+                select.value = 'local';
+            } else if (pane.type === 'android') {
+                const exists = deviceOptions.find(d => d.value === pane.serial);
+                if (exists) {
+                    select.value = pane.serial;
+                } else {
+                    // Device gone. Switch to local or show error?
+                    // Let's switch to local for stability
+                    pane.type = 'local';
+                    pane.serial = null;
+                    pane.path = '/Users/gabortabi';
+                    select.value = 'local';
+                    // We might need to reload this pane
+                    loadPaneFiles(paneId);
+                }
             }
-        } else {
-            deviceSelect.value = currentDeviceSerial;
+        };
+
+        populateSelect('left');
+        populateSelect('right');
+
+        // Initial load if not done (e.g. first run)
+        // If first run, left is local, right is android (if dev exists)
+        if (!panes.right.serial && deviceOptions.length > 0 && panes.right.type === 'android') {
+            // Auto-pick first device for right pane if it was waiting for one
+            const firstAuth = devices.find(d => d.state === 'device');
+            if (firstAuth) {
+                panes.right.serial = firstAuth.serial;
+                panes.right.selectElement.value = firstAuth.serial;
+                loadPaneFiles('right');
+            }
         }
 
-        if (currentDeviceSerial) {
-            await loadAndroidFiles(currentAndroidPath);
-        }
+        // Always ensure files are loaded/refreshed
+        // But avoiding double load if we just switched type above? 
+        // Let's just rely on loadPaneFiles being called when type changes, 
+        // or explicitly call it here if we suspect device changes affect current view.
+
+        // If we are viewing android files, refresh them just in case
+        if (panes.left.type === 'android') loadPaneFiles('left');
+        if (panes.right.type === 'android') loadPaneFiles('right');
+
     } catch (e) {
         console.error('Error refreshing devices:', e);
     }
 }
 
-deviceSelect.addEventListener('change', (e) => {
-    currentDeviceSerial = e.target.value;
-    if (currentDeviceSerial) {
-        loadAndroidFiles(currentAndroidPath);
-    } else {
-        androidFileList.innerHTML = '';
-    }
-});
-
-function showHelpModal(state = 'no-device') {
-    const helpContent = document.querySelector('#help-modal .modal-content');
-    if (state === 'unauthorized') {
-        helpContent.innerHTML = `
-            <span class="close-button">&times;</span>
-            <h2>Device Unauthorized</h2>
-            <p>A device is connected but not authorized.</p>
-            <ol>
-                <li>Check your Android device screen.</li>
-                <li>Look for a "Allow USB debugging?" prompt.</li>
-                <li>Tap <strong>Allow</strong> (and optionally "Always allow...").</li>
-            </ol>
-            <button id="btn-retry-devices">Retry Connection</button>
-        `;
-    } else {
-        // Default No Device content
-        helpContent.innerHTML = `
-            <span class="close-button">&times;</span>
-            <h2>No Android Device Found</h2>
-            <p>Please ensure:</p>
-            <ol>
-                <li>Android device is connected via USB.</li>
-                <li><strong>Developer Options</strong> are enabled on the phone.</li>
-                <li><strong>USB Debugging</strong> is turned ON.</li>
-                <li>File Transfer mode (MTP) is selected (sometimes required).</li>
-            </ol>
-            <button id="btn-retry-devices">Retry Connection</button>
-        `;
-    }
-
-    // Re-attach listeners since we overwrote innerHTML
-    helpContent.querySelector('.close-button').onclick = hideHelpModal;
-    helpContent.querySelector('#btn-retry-devices').onclick = async () => {
-        hideHelpModal();
-        await refreshDevices();
-    };
-
-    helpModal.style.display = 'flex';
+// Select Listener Helpers
+function setupPaneSelectListeners(paneId) {
+    const pane = panes[paneId];
+    pane.selectElement.addEventListener('change', (e) => {
+        const val = e.target.value;
+        if (val === 'local') {
+            pane.type = 'local';
+            pane.serial = null;
+            // Default local path? or keep last if we had one?
+            // For now reset to home to be safe or keep current if it makes sense?
+            // If switching from Android /sdcard/ to Local /, /sdcard/ doesn't exist locally.
+            pane.path = '/Users/gabortabi';
+        } else {
+            pane.type = 'android';
+            pane.serial = val;
+            pane.path = '/sdcard/';
+        }
+        loadPaneFiles(paneId);
+    });
 }
 
+setupPaneSelectListeners('left');
+setupPaneSelectListeners('right');
+
+// Help Modal Logic (Simplified or Removed if flexible)
+// We can show help if user tries to select Android and no devices found?
+// Or just let the dropdown be empty of devices.
+function showHelpModal() {
+    helpModal.style.display = 'flex';
+}
 function hideHelpModal() {
     helpModal.style.display = 'none';
 }
-
 closeHelpBtn.onclick = hideHelpModal;
 retryBtn.onclick = async () => {
     hideHelpModal();
     await refreshDevices();
 };
-
 window.onclick = (event) => {
-    if (event.target === helpModal) {
-        hideHelpModal();
+    if (event.target === helpModal) hideHelpModal();
+};
+
+// Generic File Listing
+async function loadPaneFiles(paneId) {
+    const pane = panes[paneId];
+    pane.pathDisplay.textContent = pane.path;
+
+    try {
+        let files = [];
+        if (pane.type === 'local') {
+            files = await window.electronAPI.listLocalFiles(pane.path);
+        } else {
+            if (!pane.serial) {
+                // Should not happen if type is android, but safety check
+                pane.element.innerHTML = '<div class="error">No device selected</div>';
+                return;
+            }
+            files = await window.electronAPI.listAndroidFiles(pane.path, pane.serial);
+        }
+        renderFileList(paneId, files); // Update renderFileList to use paneId
+    } catch (error) {
+        console.error(`Failed to load files for ${paneId}:`, error);
+        pane.element.innerHTML = `<div class="error">Error loading files</div>`;
+    }
+}
+
+
+// Rename Logic
+async function performRename() {
+    const pane = panes[activePaneId];
+    const file = pane.selection;
+    if (!file || file.name === '..') return alert('Please select a file to rename.');
+
+    fileToRename = {
+        paneId: activePaneId,
+        path: file.path,
+        name: file.name
+    };
+    renameInput.value = file.name;
+    renameModal.style.display = 'flex';
+    renameInput.focus();
+    renameInput.select();
+}
+
+function hideRenameModal() {
+    renameModal.style.display = 'none';
+    fileToRename = null;
+    panes[activePaneId].element.focus();
+}
+
+btnConfirmRename.onclick = async () => {
+    if (!fileToRename) return;
+    const newName = renameInput.value.trim();
+    if (!newName || newName === fileToRename.name) {
+        hideRenameModal();
+        return;
+    }
+
+    try {
+        const pane = panes[fileToRename.paneId];
+        let oldPath = fileToRename.path; // Absolute path
+        let newPath = '';
+
+        // Robust directory path construction
+        const lastSlashIndex = oldPath.lastIndexOf('/');
+        const dir = oldPath.substring(0, lastSlashIndex);
+        const parentDir = dir === '' ? '/' : dir;
+
+        if (parentDir === '/') {
+            newPath = '/' + newName;
+        } else {
+            newPath = parentDir + '/' + newName;
+        }
+
+        console.log(`Renaming ${oldPath} to ${newPath} (${pane.type})`);
+
+        if (pane.type === 'local') {
+            await window.electronAPI.renameLocal(oldPath, newPath);
+        } else {
+            await window.electronAPI.renameAndroid(oldPath, newPath, pane.serial);
+        }
+
+        hideRenameModal();
+        await loadPaneFiles(fileToRename.paneId);
+
+    } catch (e) {
+        console.error(e);
+        alert('Rename failed: ' + e);
     }
 };
+
+btnCancelRename.onclick = hideRenameModal;
+closeRenameX.onclick = hideRenameModal;
+
+// Directory Size Logic
+async function performCalculateDirSize() {
+    const pane = panes[activePaneId];
+    const file = pane.selection;
+    if (!file || !file.isDirectory || file.name === '..') return;
+
+    const container = pane.element;
+    const items = Array.from(container.getElementsByClassName('file-item'));
+    const item = items.find(el => el.dataset.path === file.path);
+
+    if (!item) return;
+    const sizeEl = item.querySelector('.file-size');
+    if (!sizeEl) return;
+
+    sizeEl.textContent = '...';
+
+    try {
+        let sizeBytes = 0;
+        if (pane.type === 'local') {
+            sizeBytes = await window.electronAPI.getLocalDirSize(file.path);
+        } else {
+            sizeBytes = await window.electronAPI.getAndroidDirSize(file.path, pane.serial);
+        }
+        sizeEl.textContent = formatBytes(sizeBytes);
+    } catch (e) {
+        sizeEl.textContent = 'Error';
+    }
+}
 
 // Editor Modal Logic
 function showEditor(filename, content, isReadOnly = false) {
@@ -177,9 +330,7 @@ function showEditor(filename, content, isReadOnly = false) {
 function hideEditor() {
     editorModal.style.display = 'none';
     currentEditingFile = null;
-    // Return focus to active pane
-    if (activePane === 'local') localFileList.focus();
-    else androidFileList.focus();
+    panes[activePaneId].element.focus();
 }
 
 btnCloseEditor.onclick = hideEditor;
@@ -189,13 +340,15 @@ btnSaveFile.onclick = async () => {
     if (!currentEditingFile) return;
     try {
         const content = editorTextarea.value;
-        if (currentEditingFile.type === 'local') {
+        const pane = panes[currentEditingFile.paneId];
+
+        if (pane.type === 'local') {
             await window.electronAPI.saveLocalFile(currentEditingFile.path, content);
         } else {
-            await window.electronAPI.saveAndroidFile(currentEditingFile.path, content, currentDeviceSerial);
+            await window.electronAPI.saveAndroidFile(currentEditingFile.path, content, pane.serial);
         }
         hideEditor();
-        refresh(); // Refresh to update timestamps/sizes if needed
+        loadPaneFiles(currentEditingFile.paneId);
     } catch (e) {
         alert('Error saving file: ' + e);
     }
@@ -218,93 +371,102 @@ function hideProgress() {
 
 // Operations
 async function performCopy() {
-    if (activePane === 'local') {
-        if (!selectedLocalFile) return alert('No file selected in Local pane.');
-        if (!currentDeviceSerial) return alert('No Android device connected.');
+    const srcPaneId = activePaneId;
+    const destPaneId = activePaneId === 'left' ? 'right' : 'left';
 
-        const source = selectedLocalFile.path;
-        const dest = currentAndroidPath + (currentAndroidPath.endsWith('/') ? '' : '/') + selectedLocalFile.name;
+    const srcPane = panes[srcPaneId];
+    const destPane = panes[destPaneId];
 
-        if (confirm(`Copy ${selectedLocalFile.name} to Android?`)) {
-            try {
-                showProgress('Copying...', `Copying ${selectedLocalFile.name} to Android`);
-                await window.electronAPI.copyToAndroid(source, dest, currentDeviceSerial);
-                await refreshFiles();
-            } catch (e) {
-                alert('Copy failed: ' + e);
-            } finally {
-                hideProgress();
+    const file = srcPane.selection;
+    if (!file) return alert('No file selected.');
+    if (file.name === '..') return;
+
+    // Determine Destination Path
+    // destPane.path + separator + file.name
+    const separator = destPane.path.endsWith('/') ? '' : '/';
+    const destPath = `${destPane.path}${separator}${file.name}`;
+
+    const msg = `Copy ${file.name} to ${destPane.id === 'left' ? 'Left' : 'Right'} Pane (${destPane.type})?`;
+
+    if (confirm(msg)) {
+        try {
+            showProgress('Copying...', `Copying ${file.name}...`);
+
+            // Dispatch based on types
+            if (srcPane.type === 'local' && destPane.type === 'local') {
+                await window.electronAPI.copyLocalLocal(file.path, destPath);
+            } else if (srcPane.type === 'local' && destPane.type === 'android') {
+                await window.electronAPI.copyToAndroid(file.path, destPath, destPane.serial);
+            } else if (srcPane.type === 'android' && destPane.type === 'local') {
+                await window.electronAPI.copyToMac(file.path, destPath, srcPane.serial);
+            } else if (srcPane.type === 'android' && destPane.type === 'android') {
+                // Same device or different?
+                // For now, assume single device scenario or simplistic cross-device if adb supports it (it doesn't directly).
+                // If serials match, use shell cp.
+                if (srcPane.serial === destPane.serial) {
+                    await window.electronAPI.copyAndroidAndroid(file.path, destPath, srcPane.serial);
+                } else {
+                    alert('Copying between two DIFFERENT Android devices is not yet supported directly.');
+                    return;
+                }
             }
-        }
-    } else {
-        if (!selectedAndroidFile) return alert('No file selected in Android pane.');
 
-        const source = selectedAndroidFile.path;
-        const dest = currentLocalPath + (currentLocalPath.endsWith('/') ? '' : '/') + selectedAndroidFile.name;
-
-        if (confirm(`Copy ${selectedAndroidFile.name} to Mac?`)) {
-            try {
-                showProgress('Copying...', `Copying ${selectedAndroidFile.name} to Mac`);
-                await window.electronAPI.copyToMac(source, dest, currentDeviceSerial);
-                await refreshFiles();
-            } catch (e) {
-                alert('Copy failed: ' + e);
-            } finally {
-                hideProgress();
-            }
+            await loadPaneFiles(destPaneId);
+            // Refresh source too if it was a move or something changed? Copy doesn't change source.
+        } catch (e) {
+            alert('Copy failed: ' + e);
+        } finally {
+            hideProgress();
         }
     }
 }
 
 async function performDelete() {
-    if (activePane === 'local') {
-        if (!selectedLocalFile) return alert('No file selected.');
-        if (confirm(`Delete ${selectedLocalFile.name}?`)) {
-            try {
-                showProgress('Deleting...', `Deleting ${selectedLocalFile.name}`);
-                await window.electronAPI.deleteLocal(selectedLocalFile.path);
-                selectedLocalFile = null;
-                await refreshFiles();
-            } catch (e) {
-                alert('Delete failed: ' + e);
-            } finally {
-                hideProgress();
+    const pane = panes[activePaneId];
+    const file = pane.selection;
+
+    if (!file) return alert('No file selected.');
+    if (file.name === '..') return;
+
+    if (confirm(`Delete ${file.name}?`)) {
+        try {
+            showProgress('Deleting...', `Deleting ${file.name}`);
+            if (pane.type === 'local') {
+                await window.electronAPI.deleteLocal(file.path);
+            } else {
+                await window.electronAPI.deleteAndroid(file.path, pane.serial);
             }
-        }
-    } else {
-        if (!selectedAndroidFile) return alert('No file selected.');
-        if (confirm(`Delete ${selectedAndroidFile.name}?`)) {
-            try {
-                showProgress('Deleting...', `Deleting ${selectedAndroidFile.name}`);
-                await window.electronAPI.deleteAndroid(selectedAndroidFile.path, currentDeviceSerial);
-                selectedAndroidFile = null;
-                await refreshFiles();
-            } catch (e) {
-                alert('Delete failed: ' + e);
-            } finally {
-                hideProgress();
-            }
+            pane.selection = null;
+            await loadPaneFiles(pane.id);
+        } catch (e) {
+            alert('Delete failed: ' + e);
+        } finally {
+            hideProgress();
         }
     }
 }
 
 async function performViewEdit(isEdit) {
-    const file = activePane === 'local' ? selectedLocalFile : selectedAndroidFile;
-    if (!file || file.isDirectory) return alert('Please select a file.');
+    const pane = panes[activePaneId];
+    const file = pane.selection;
+
+    if (!file) return alert('Please select a file.');
+    if (file.isDirectory) return alert(`Cannot ${isEdit ? 'edit' : 'view'} a directory. Use Enter to open it.`);
 
     const binaryExtensions = [
         '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.zip', '.tar', '.gz', '.apk', '.exe', '.bin', '.iso', '.mp4', '.mp3', '.wav', '.dmg',
         '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'
     ];
     const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+
     if (binaryExtensions.includes(ext)) {
         if (confirm(`This is not a text file (${ext}). Open in default system viewer?`)) {
             try {
                 showProgress('Opening...', `Opening ${file.name}`);
-                if (activePane === 'local') {
+                if (pane.type === 'local') {
                     await window.electronAPI.openExternal(file.path);
                 } else {
-                    const tempPath = await window.electronAPI.pullTempAndroid(file.path, currentDeviceSerial);
+                    const tempPath = await window.electronAPI.pullTempAndroid(file.path, pane.serial);
                     await window.electronAPI.openExternal(tempPath);
                 }
             } catch (e) {
@@ -318,14 +480,14 @@ async function performViewEdit(isEdit) {
 
     try {
         let content = '';
-        if (activePane === 'local') {
+        if (pane.type === 'local') {
             content = await window.electronAPI.readLocalFile(file.path);
         } else {
-            content = await window.electronAPI.readAndroidFile(file.path, currentDeviceSerial);
+            content = await window.electronAPI.readAndroidFile(file.path, pane.serial);
         }
 
         currentEditingFile = {
-            type: activePane,
+            paneId: activePaneId,
             path: file.path,
             name: file.name
         };
@@ -338,82 +500,70 @@ async function performViewEdit(isEdit) {
 
 // UI Events
 document.getElementById('btn-refresh').addEventListener('click', async () => {
-    await loadLocalFiles(currentLocalPath);
-    await refreshDevices();
+    // Refresh both panes
+    await refreshDevices(); // This also triggers reloads if needed, but we can force it
+    await loadPaneFiles('left');
+    await loadPaneFiles('right');
 });
 document.getElementById('btn-copy').addEventListener('click', performCopy);
+document.getElementById('btn-rename').addEventListener('click', performRename);
 document.getElementById('btn-delete').addEventListener('click', performDelete);
+document.getElementById('btn-size').addEventListener('click', performCalculateDirSize);
 document.getElementById('btn-view').addEventListener('click', () => performViewEdit(false));
 document.getElementById('btn-edit').addEventListener('click', () => performViewEdit(true));
 document.getElementById('btn-exit').addEventListener('click', () => window.close());
 
-async function refreshFiles() {
-    await loadLocalFiles(currentLocalPath);
-    if (currentDeviceSerial) {
-        await loadAndroidFiles(currentAndroidPath);
-    }
-}
 
-function refresh() {
-    refreshFiles();
-}
+function renderFileList(paneId, files) {
+    const pane = panes[paneId];
+    const container = pane.element;
+    const currentPath = pane.path;
 
-async function loadLocalFiles(path) {
-    try {
-        const files = await window.electronAPI.listLocalFiles(path);
-        renderFileList(localFileList, files, 'local', path);
-        localPathDisplay.textContent = path;
-        currentLocalPath = path;
-    } catch (error) {
-        console.error('Failed to load local files:', error);
-        localFileList.innerHTML = '<div class="error">Error loading files</div>';
-    }
-}
-
-async function loadAndroidFiles(path) {
-    if (!currentDeviceSerial) return;
-    try {
-        const files = await window.electronAPI.listAndroidFiles(path, currentDeviceSerial);
-        renderFileList(androidFileList, files, 'android', path);
-        androidPathDisplay.textContent = path;
-        currentAndroidPath = path;
-    } catch (error) {
-        console.error('Failed to load android files:', error);
-        androidFileList.innerHTML = '<div class="error">Error loading files (Check ADB)</div>';
-    }
-}
-
-function renderFileList(container, files, type, currentPath) {
     container.innerHTML = '';
+    pane.selection = null; // Clear selection on reload
 
     // Add ".." entry if not at root
-    const upDiv = document.createElement('div');
-    upDiv.className = 'file-item directory';
-    upDiv.textContent = '..';
-    upDiv.dataset.name = '..';
-    upDiv.dataset.isDirectory = 'true';
-    upDiv.onclick = () => {
-        selectItem(upDiv, container);
-        navigateUp(type);
-    };
-    container.appendChild(upDiv);
+    if (currentPath !== '/') {
+        const upDiv = document.createElement('div');
+        upDiv.className = 'file-item directory';
+        upDiv.innerHTML = `<span class="file-name">..</span><span class="file-size"></span>`;
+        upDiv.dataset.name = '..';
+        upDiv.dataset.isDirectory = 'true';
+        upDiv.onclick = () => {
+            selectItem(paneId, upDiv);
+            navigateUp(paneId);
+        };
+        container.appendChild(upDiv);
+    }
 
     files.forEach(file => {
         const div = document.createElement('div');
         div.className = `file-item ${file.isDirectory ? 'directory' : 'file'}`;
-        div.textContent = file.name;
+
+        let sizeText = '';
+        if (file.isDirectory) {
+            sizeText = '<DIR>';
+        } else {
+            sizeText = formatBytes(file.size || 0);
+        }
+
+        div.innerHTML = `<span class="file-name">${file.name}</span><span class="file-size">${sizeText}</span>`;
         div.dataset.name = file.name;
         div.dataset.isDirectory = file.isDirectory;
-        div.dataset.path = currentPath + (currentPath.endsWith('/') ? '' : '/') + file.name;
+
+        const separator = currentPath.endsWith('/') ? '' : '/';
+        const fullPath = `${currentPath}${separator}${file.name}`;
+
+        div.dataset.path = fullPath;
 
         div.onclick = (e) => {
-            selectItem(div, container);
-            updateSelectionState(type, file, div.dataset.path);
+            selectItem(paneId, div);
+            updateSelectionState(paneId, file, fullPath);
         };
 
         div.ondblclick = () => {
             if (file.isDirectory) {
-                navigateInto(type, file.name);
+                navigateInto(paneId, file.name);
             }
         };
 
@@ -421,7 +571,9 @@ function renderFileList(container, files, type, currentPath) {
     });
 }
 
-function selectItem(element, container) {
+function selectItem(paneId, element) {
+    const pane = panes[paneId];
+    const container = pane.element;
     const previouslySelected = container.querySelector('.selected');
     if (previouslySelected) previouslySelected.classList.remove('selected');
     element.classList.add('selected');
@@ -430,48 +582,37 @@ function selectItem(element, container) {
     });
 }
 
-function updateSelectionState(type, file, fullPath) {
-    if (type === 'local') {
-        selectedLocalFile = {
-            name: file.name,
-            path: fullPath,
-            isDirectory: file.isDirectory
-        };
-    } else {
-        selectedAndroidFile = {
-            name: file.name,
-            path: fullPath,
-            isDirectory: file.isDirectory
-        };
-    }
+function updateSelectionState(paneId, file, fullPath) {
+    const pane = panes[paneId];
+    pane.selection = {
+        name: file.name,
+        path: fullPath,
+        isDirectory: file.isDirectory
+    };
 }
 
-function navigateUp(type) {
-    if (type === 'local') {
-        const parts = currentLocalPath.split('/').filter(p => p);
-        parts.pop();
-        const newPath = '/' + parts.join('/');
-        loadLocalFiles(newPath || '/');
-    } else {
-        const parts = currentAndroidPath.split('/').filter(p => p);
-        parts.pop();
-        const newPath = '/' + parts.join('/');
-        loadAndroidFiles(newPath || '/');
-    }
+function navigateUp(paneId) {
+    const pane = panes[paneId];
+    const parts = pane.path.split('/').filter(p => p);
+    parts.pop();
+    const newPath = '/' + parts.join('/');
+    pane.path = newPath || '/';
+    loadPaneFiles(paneId);
 }
 
-function navigateInto(type, folderName) {
-    if (type === 'local') {
-        const newPath = currentLocalPath === '/' ? `/${folderName}` : `${currentLocalPath}/${folderName}`;
-        loadLocalFiles(newPath);
-    } else {
-        const newPath = currentAndroidPath === '/' ? `/${folderName}` : `${currentAndroidPath}/${folderName}`;
-        loadAndroidFiles(newPath);
-    }
+function navigateInto(paneId, folderName) {
+    const pane = panes[paneId];
+    // Avoid double slashes logic
+    const separator = pane.path.endsWith('/') ? '' : '/';
+    const newPath = `${pane.path}${separator}${folderName}`;
+    pane.path = newPath;
+    loadPaneFiles(paneId);
 }
 
-// Keyboard Navigation & Shortcuts
-function handleKeyNavigation(e, container, type) {
+// Keyboard Navigation
+function handleKeyNavigation(e, paneId) {
+    const pane = panes[paneId];
+    const container = pane.element;
     const items = Array.from(container.getElementsByClassName('file-item'));
     let selectedIndex = items.findIndex(item => item.classList.contains('selected'));
 
@@ -479,56 +620,57 @@ function handleKeyNavigation(e, container, type) {
         e.preventDefault();
         if (selectedIndex < items.length - 1) {
             const newItem = items[selectedIndex + 1];
-            selectItem(newItem, container);
-            updateSelectionFromElement(newItem, type);
+            selectItem(paneId, newItem);
+            updateSelectionFromElement(paneId, newItem);
         } else if (selectedIndex === -1 && items.length > 0) {
-            selectItem(items[0], container);
-            updateSelectionFromElement(items[0], type);
+            selectItem(paneId, items[0]);
+            updateSelectionFromElement(paneId, items[0]);
         }
     } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         if (selectedIndex > 0) {
             const newItem = items[selectedIndex - 1];
-            selectItem(newItem, container);
-            updateSelectionFromElement(newItem, type);
+            selectItem(paneId, newItem);
+            updateSelectionFromElement(paneId, newItem);
         }
     } else if (e.key === 'Enter') {
         e.preventDefault();
         if (selectedIndex !== -1) {
             const item = items[selectedIndex];
             if (item.dataset.name === '..') {
-                navigateUp(type);
+                navigateUp(paneId);
             } else if (item.dataset.isDirectory === 'true') {
-                navigateInto(type, item.dataset.name);
+                navigateInto(paneId, item.dataset.name);
             }
         }
     }
 }
 
-function updateSelectionFromElement(element, type) {
+function updateSelectionFromElement(paneId, element) {
     const name = element.dataset.name;
     const isDirectory = element.dataset.isDirectory === 'true';
     const path = element.dataset.path;
 
-    if (name === '..') return; // Don't track .. as a file selection for ops
-
-    if (type === 'local') {
-        selectedLocalFile = {
-            name,
-            path,
-            isDirectory
-        };
-    } else {
-        selectedAndroidFile = {
-            name,
-            path,
-            isDirectory
-        };
+    if (name === '..') {
+        panes[paneId].selection = null;
+        return;
     }
+
+    panes[paneId].selection = {
+        name,
+        path,
+        isDirectory
+    };
 }
 
 // Global Shortcuts
 window.addEventListener('keydown', (e) => {
+    if (renameModal.style.display === 'flex') {
+        if (e.key === 'Escape') hideRenameModal();
+        if (e.key === 'Enter') btnConfirmRename.click();
+        return;
+    }
+
     if (e.key === 'F3') {
         e.preventDefault();
         performViewEdit(false);
@@ -541,9 +683,17 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         performCopy();
     }
+    if (e.key === 'F7') {
+        e.preventDefault();
+        performRename();
+    }
     if (e.key === 'F8') {
         e.preventDefault();
         performDelete();
+    }
+    if (e.key === 'F9') {
+        e.preventDefault();
+        performCalculateDirSize();
     }
     if (e.key === 'F10') {
         e.preventDefault();
@@ -551,28 +701,28 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
-localFileList.addEventListener('focus', () => {
-    activePane = 'local';
+panes.left.element.addEventListener('focus', () => {
+    activePaneId = 'left';
 });
-androidFileList.addEventListener('focus', () => {
-    activePane = 'android';
+panes.right.element.addEventListener('focus', () => {
+    activePaneId = 'right';
 });
 
-localFileList.addEventListener('keydown', (e) => {
+panes.left.element.addEventListener('keydown', (e) => {
     if (e.key === 'Tab') {
         e.preventDefault();
-        androidFileList.focus();
+        panes.right.element.focus();
     } else {
-        handleKeyNavigation(e, localFileList, 'local');
+        handleKeyNavigation(e, 'left');
     }
 });
 
-androidFileList.addEventListener('keydown', (e) => {
+panes.right.element.addEventListener('keydown', (e) => {
     if (e.key === 'Tab') {
         e.preventDefault();
-        localFileList.focus();
+        panes.left.element.focus();
     } else {
-        handleKeyNavigation(e, androidFileList, 'android');
+        handleKeyNavigation(e, 'right');
     }
 });
 
