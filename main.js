@@ -91,6 +91,7 @@ ipcMain.handle('list-local-files', async (event, dirPath) => {
                     isDirectory: stats.isDirectory(),
                     size: stats.size,
                     mtime: stats.mtime,
+                    birthtime: stats.birthtime,
                 };
             } catch (err) {
                 return null; // Ignore files we can't stat (permissions etc)
@@ -176,11 +177,24 @@ ipcMain.handle('list-android-files', async (event, dirPath, deviceSerial) => {
             const permissions = parts[0];
             const isDirectory = permissions.startsWith('d');
 
-            let size = 0;
-            // Parse size if it's a file
-            // standard: [perms] [links] [owner] [group] [size] [date] [time] [name]
             if (!isDirectory && parts.length >= 5) {
                 size = parseInt(parts[4], 10) || 0;
+            }
+
+            // Date parsing (Basic attempt)
+            // Formats: 
+            // 2023-01-01 12:00
+            // Jan 1 12:00 (recent) or Jan 1 2023 (older) depends on system.
+            // Toybox usually ISO-ish: 2023-01-01 12:00
+
+            let mtime = new Date(0); // Default epoch
+            if (parts.length >= 7) {
+                const dateStr = `${parts[5]} ${parts[6]}`;
+                // Try parsing
+                const parsed = Date.parse(dateStr);
+                if (!isNaN(parsed)) {
+                    mtime = new Date(parsed);
+                }
             }
 
             // If we assume the first 7 fields are metadata, the rest is name.
@@ -190,6 +204,7 @@ ipcMain.handle('list-android-files', async (event, dirPath, deviceSerial) => {
                     name: name,
                     isDirectory: isDirectory,
                     size: size,
+                    mtime: mtime,
                     details: line // pass full line for debug/display
                 };
             }

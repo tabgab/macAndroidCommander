@@ -51,6 +51,20 @@ body {
     border: 1px solid #999;
 }
 
+.header-tools {
+    display: flex;
+    align-items: center;
+    margin-right: 10px;
+}
+
+.sort-select {
+    padding: 2px;
+    font-size: 0.9em;
+    background-color: #eee;
+    color: #333;
+    border: 1px solid #999;
+}
+
 .file-list {
     flex: 1;
     overflow-y: auto;

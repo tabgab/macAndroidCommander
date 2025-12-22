@@ -11,7 +11,9 @@ const panes = {
         serial: null, // serial for android
         element: document.getElementById('left-file-list'),
         pathDisplay: document.getElementById('left-path'),
-        selectElement: document.getElementById('left-device-select')
+        selectElement: document.getElementById('left-device-select'),
+        sortElement: document.querySelector('.sort-select[data-pane="left"]'),
+        sortOrder: 'name' // 'name', 'date', 'creation'
     },
     right: {
         id: 'right',
@@ -23,7 +25,9 @@ const panes = {
         serial: null,
         element: document.getElementById('right-file-list'),
         pathDisplay: document.getElementById('right-path'),
-        selectElement: document.getElementById('right-device-select')
+        selectElement: document.getElementById('right-device-select'),
+        sortElement: document.querySelector('.sort-select[data-pane="right"]'),
+        sortOrder: 'name'
     }
 };
 
@@ -74,6 +78,22 @@ window.addEventListener('DOMContentLoaded', async () => {
 window.electronAPI.onDeviceListChanged(async () => {
     console.log('Device list changed, refreshing...');
     await refreshDevices();
+});
+
+// Sort Event Listeners
+['left', 'right'].forEach(paneId => {
+    const pane = panes[paneId];
+    if (pane.sortElement) {
+        pane.sortElement.addEventListener('change', async (e) => {
+            pane.sortOrder = e.target.value;
+            // Reload to re-sort (since sorting happens in render, but we need to ensure the list is refreshed or at least re-rendered with current cache)
+            // But we don't cache files currently, we load them.
+            // Efficient way: re-render if we had file list stored? 
+            // We don't store file list in pane state. WE SHOULD?
+            // For now, re-load is easiest.
+            await loadPaneFiles(paneId);
+        });
+    }
 });
 
 // Device Management
@@ -538,6 +558,31 @@ function renderFileList(paneId, files) {
     const currentPath = pane.path;
 
     container.innerHTML = '';
+    // Sort Files
+    files.sort((a, b) => {
+        // Always Directories First
+        if (a.isDirectory && !b.isDirectory) return -1;
+        if (!a.isDirectory && b.isDirectory) return 1;
+
+        const order = pane.sortOrder || 'name';
+
+        if (order === 'name') {
+            return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
+        } else if (order === 'date') {
+            // Newest modification first
+            const dateA = a.mtime ? new Date(a.mtime) : new Date(0);
+            const dateB = b.mtime ? new Date(b.mtime) : new Date(0);
+            return dateB - dateA;
+        } else if (order === 'creation') {
+            // Newest creation first
+            // Fallback to mtime if birthtime missing (Android often lacks birthtime)
+            const dateA = a.birthtime ? new Date(a.birthtime) : (a.mtime ? new Date(a.mtime) : new Date(0));
+            const dateB = b.birthtime ? new Date(b.birthtime) : (b.mtime ? new Date(b.mtime) : new Date(0));
+            return dateB - dateA;
+        }
+        return 0;
+    });
+
     pane.selections = []; // Clear selections on reload
     pane.lastSelectedPath = null;
 

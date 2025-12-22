@@ -20,7 +20,8 @@ A Midnight Commander-inspired dual-pane file manager for macOS and Android. Mana
         *   **Mouse**: Click to select. Shift+Click to select a range.
         *   **Keyboard**: Shift+Up/Down to select a range.
         *   **Unified State**: Selection state is shared between mouse and keyboard actions.
-*   **Device Management**: Auto-detects connected devices; supports multiple devices.
+    *   **Device Management**: Auto-detects connected devices; supports multiple devices.
+    *   **File Sorting**: Sort files by Name, Date Modified, or Date Created.
 *   **Robust Copying**: Handles large directories and symlinks correctly.
 
 ## Prerequisites
