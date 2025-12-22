@@ -96,6 +96,10 @@ body {
     color: black;
 }
 
+.file-item.active-focus {
+    border: 1px dotted #fff;
+}
+
 .file-item.directory {
     color: #ffffff;
     font-weight: bold;

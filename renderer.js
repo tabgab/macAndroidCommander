@@ -6,7 +6,8 @@ const panes = {
         type: 'local', // 'local' or 'android'
         path: '/',
         history: [],
-        selection: null,
+        selections: [], // Array of { name, path, isDirectory }
+        lastSelectedPath: null, // For shift-select range logic
         serial: null, // serial for android
         element: document.getElementById('left-file-list'),
         pathDisplay: document.getElementById('left-path'),
@@ -17,7 +18,8 @@ const panes = {
         type: 'android',
         path: '/sdcard/',
         history: [],
-        selection: null,
+        selections: [],
+        lastSelectedPath: null,
         serial: null,
         element: document.getElementById('right-file-list'),
         pathDisplay: document.getElementById('right-path'),
@@ -141,13 +143,11 @@ async function refreshDevices() {
         }
 
         // Always ensure files are loaded/refreshed
-        // But avoiding double load if we just switched type above? 
-        // Let's just rely on loadPaneFiles being called when type changes, 
-        // or explicitly call it here if we suspect device changes affect current view.
-
-        // If we are viewing android files, refresh them just in case
-        if (panes.left.type === 'android') loadPaneFiles('left');
-        if (panes.right.type === 'android') loadPaneFiles('right');
+        // If we are viewing android files, refresh them just in case.
+        // Also ensure local files are loaded if they haven't been.
+        // Effectively, refresh everything.
+        loadPaneFiles('left');
+        loadPaneFiles('right');
 
     } catch (e) {
         console.error('Error refreshing devices:', e);
@@ -224,8 +224,10 @@ async function loadPaneFiles(paneId) {
 // Rename Logic
 async function performRename() {
     const pane = panes[activePaneId];
-    const file = pane.selection;
-    if (!file || file.name === '..') return alert('Please select a file to rename.');
+    if (!pane.selections || pane.selections.length !== 1) return alert('Please select exactly one file to rename.');
+
+    const file = pane.selections[0];
+    if (file.name === '..') return;
 
     fileToRename = {
         paneId: activePaneId,
@@ -377,37 +379,41 @@ async function performCopy() {
     const srcPane = panes[srcPaneId];
     const destPane = panes[destPaneId];
 
-    const file = srcPane.selection;
-    if (!file) return alert('No file selected.');
-    if (file.name === '..') return;
+    const selections = srcPane.selections;
+    if (!selections || selections.length === 0) return alert('No files selected.');
 
-    // Determine Destination Path
-    // destPane.path + separator + file.name
-    const separator = destPane.path.endsWith('/') ? '' : '/';
-    const destPath = `${destPane.path}${separator}${file.name}`;
+    const validFiles = selections.filter(f => f.name !== '..');
+    if (validFiles.length === 0) return;
 
-    const msg = `Copy ${file.name} to ${destPane.id === 'left' ? 'Left' : 'Right'} Pane (${destPane.type})?`;
+    const count = validFiles.length;
+    const nameStr = count === 1 ? validFiles[0].name : `${count} files`;
+
+    const msg = `Copy ${nameStr} to ${destPane.id === 'left' ? 'Left' : 'Right'} Pane (${destPane.type})?`;
 
     if (confirm(msg)) {
         try {
-            showProgress('Copying...', `Copying ${file.name}...`);
+            showProgress('Copying...', `Preparing to copy ${count} files...`);
 
-            // Dispatch based on types
-            if (srcPane.type === 'local' && destPane.type === 'local') {
-                await window.electronAPI.copyLocalLocal(file.path, destPath);
-            } else if (srcPane.type === 'local' && destPane.type === 'android') {
-                await window.electronAPI.copyToAndroid(file.path, destPath, destPane.serial);
-            } else if (srcPane.type === 'android' && destPane.type === 'local') {
-                await window.electronAPI.copyToMac(file.path, destPath, srcPane.serial);
-            } else if (srcPane.type === 'android' && destPane.type === 'android') {
-                // Same device or different?
-                // For now, assume single device scenario or simplistic cross-device if adb supports it (it doesn't directly).
-                // If serials match, use shell cp.
-                if (srcPane.serial === destPane.serial) {
-                    await window.electronAPI.copyAndroidAndroid(file.path, destPath, srcPane.serial);
-                } else {
-                    alert('Copying between two DIFFERENT Android devices is not yet supported directly.');
-                    return;
+            for (const file of validFiles) {
+                // Determine Destination Path
+                const separator = destPane.path.endsWith('/') ? '' : '/';
+                const destPath = `${destPane.path}${separator}${file.name}`;
+
+                progressMessage.textContent = `Copying ${file.name}...`;
+
+                // Dispatch based on types
+                if (srcPane.type === 'local' && destPane.type === 'local') {
+                    await window.electronAPI.copyLocalLocal(file.path, destPath);
+                } else if (srcPane.type === 'local' && destPane.type === 'android') {
+                    await window.electronAPI.copyToAndroid(file.path, destPath, destPane.serial);
+                } else if (srcPane.type === 'android' && destPane.type === 'local') {
+                    await window.electronAPI.copyToMac(file.path, destPath, srcPane.serial);
+                } else if (srcPane.type === 'android' && destPane.type === 'android') {
+                    if (srcPane.serial === destPane.serial) {
+                        await window.electronAPI.copyAndroidAndroid(file.path, destPath, srcPane.serial);
+                    } else {
+                        throw new Error('Copying between different Android devices not supported.');
+                    }
                 }
             }
 
@@ -423,20 +429,29 @@ async function performCopy() {
 
 async function performDelete() {
     const pane = panes[activePaneId];
-    const file = pane.selection;
+    const selections = pane.selections;
 
-    if (!file) return alert('No file selected.');
-    if (file.name === '..') return;
+    if (!selections || selections.length === 0) return alert('No files selected.');
+    const validFiles = selections.filter(f => f.name !== '..');
+    if (validFiles.length === 0) return;
 
-    if (confirm(`Delete ${file.name}?`)) {
+    const count = validFiles.length;
+    const nameStr = count === 1 ? validFiles[0].name : `${count} files`;
+
+    if (confirm(`Delete ${nameStr}?`)) {
         try {
-            showProgress('Deleting...', `Deleting ${file.name}`);
-            if (pane.type === 'local') {
-                await window.electronAPI.deleteLocal(file.path);
-            } else {
-                await window.electronAPI.deleteAndroid(file.path, pane.serial);
+            showProgress('Deleting...', `Preparing to delete ${count} files...`);
+
+            for (const file of validFiles) {
+                progressMessage.textContent = `Deleting ${file.name}...`;
+                if (pane.type === 'local') {
+                    await window.electronAPI.deleteLocal(file.path);
+                } else {
+                    await window.electronAPI.deleteAndroid(file.path, pane.serial);
+                }
             }
-            pane.selection = null;
+
+            pane.selections = [];
             await loadPaneFiles(pane.id);
         } catch (e) {
             alert('Delete failed: ' + e);
@@ -448,9 +463,11 @@ async function performDelete() {
 
 async function performViewEdit(isEdit) {
     const pane = panes[activePaneId];
-    const file = pane.selection;
 
-    if (!file) return alert('Please select a file.');
+    // Check selections length
+    if (!pane.selections || pane.selections.length !== 1) return alert(`Please select exactly one file to ${isEdit ? 'edit' : 'view'}.`);
+
+    const file = pane.selections[0];
     if (file.isDirectory) return alert(`Cannot ${isEdit ? 'edit' : 'view'} a directory. Use Enter to open it.`);
 
     const binaryExtensions = [
@@ -514,13 +531,15 @@ document.getElementById('btn-edit').addEventListener('click', () => performViewE
 document.getElementById('btn-exit').addEventListener('click', () => window.close());
 
 
+
 function renderFileList(paneId, files) {
     const pane = panes[paneId];
     const container = pane.element;
     const currentPath = pane.path;
 
     container.innerHTML = '';
-    pane.selection = null; // Clear selection on reload
+    pane.selections = []; // Clear selections on reload
+    pane.lastSelectedPath = null;
 
     // Add ".." entry if not at root
     if (currentPath !== '/') {
@@ -529,10 +548,12 @@ function renderFileList(paneId, files) {
         upDiv.innerHTML = `<span class="file-name">..</span><span class="file-size"></span>`;
         upDiv.dataset.name = '..';
         upDiv.dataset.isDirectory = 'true';
-        upDiv.onclick = () => {
-            selectItem(paneId, upDiv);
-            navigateUp(paneId);
+        upDiv.onclick = (e) => {
+            // Clicking .. should just select it like any other file (for operations)
+            // Double click navigates active pane up
+            handleSelection(paneId, { name: '..', isDirectory: true, path: null }, upDiv, e);
         };
+        upDiv.ondblclick = () => navigateUp(paneId);
         container.appendChild(upDiv);
     }
 
@@ -557,8 +578,7 @@ function renderFileList(paneId, files) {
         div.dataset.path = fullPath;
 
         div.onclick = (e) => {
-            selectItem(paneId, div);
-            updateSelectionState(paneId, file, fullPath);
+            handleSelection(paneId, file, div, e);
         };
 
         div.ondblclick = () => {
@@ -571,24 +591,106 @@ function renderFileList(paneId, files) {
     });
 }
 
-function selectItem(paneId, element) {
+function handleSelection(paneId, fileObj, element, event) {
     const pane = panes[paneId];
     const container = pane.element;
-    const previouslySelected = container.querySelector('.selected');
-    if (previouslySelected) previouslySelected.classList.remove('selected');
-    element.classList.add('selected');
-    element.scrollIntoView({
-        block: 'nearest'
-    });
+    const items = Array.from(container.querySelectorAll('.file-item'));
+
+    // Ensure we have a valid path for range logic
+    const fullPath = element.dataset.path || null;
+
+    const fileData = {
+        name: element.dataset.name,
+        path: fullPath,
+        isDirectory: element.dataset.isDirectory === 'true'
+    };
+
+    // If ".." is clicked, it's a special case, usually just single select
+    if (fileData.name === '..') {
+        pane.selections = []; // Clear other selections
+        pane.lastSelectedPath = null;
+        // Optionally add .. to selections if operations support it (usually they don't, but for consistency)
+        // Let's NOT add it to selections for operations, but visually select it.
+        updateVisualSelection(paneId, element);
+        return;
+    }
+
+    if (event.shiftKey && pane.lastSelectedPath && pane.selections.length > 0) {
+        // Range Selection
+        const lastIdx = items.findIndex(el => el.dataset.path === pane.lastSelectedPath);
+        const currentIdx = items.indexOf(element);
+
+        if (lastIdx !== -1 && currentIdx !== -1) {
+            const start = Math.min(lastIdx, currentIdx);
+            const end = Math.max(lastIdx, currentIdx);
+
+            // Re-build selections based on range
+            // We usually want to KEEP existing selections if CTRL is held, but standard Shift-Click
+            // from an anchor usually replaces the selection with the new range.
+            pane.selections = [];
+
+            for (let i = start; i <= end; i++) {
+                const el = items[i];
+                if (el.dataset.name === '..') continue;
+                pane.selections.push({
+                    name: el.dataset.name,
+                    path: el.dataset.path,
+                    isDirectory: el.dataset.isDirectory === 'true'
+                });
+            }
+            // Update Active Focus to the clicked element (current)
+            items.forEach(el => el.classList.remove('active-focus'));
+            element.classList.add('active-focus');
+        }
+    } else if (event.metaKey || event.ctrlKey) {
+        // Toggle selection (standard OS behavior)
+        const existingIdx = pane.selections.findIndex(s => s.path === fullPath);
+        if (existingIdx !== -1) {
+            pane.selections.splice(existingIdx, 1);
+        } else {
+            pane.selections.push(fileData);
+            pane.lastSelectedPath = fullPath; // Update anchor
+        }
+        // Update active focus
+        items.forEach(el => el.classList.remove('active-focus'));
+        element.classList.add('active-focus');
+    } else {
+        // Single Selection (Replace)
+        pane.selections = [fileData];
+        pane.lastSelectedPath = fullPath;
+
+        // Update active focus
+        items.forEach(el => el.classList.remove('active-focus'));
+        element.classList.add('active-focus');
+    }
+
+    updateVisualSelection(paneId);
 }
 
-function updateSelectionState(paneId, file, fullPath) {
+function updateVisualSelection(paneId, forceSelectedElement = null) {
     const pane = panes[paneId];
-    pane.selection = {
-        name: file.name,
-        path: fullPath,
-        isDirectory: file.isDirectory
-    };
+    const container = pane.element;
+    const items = container.querySelectorAll('.file-item');
+
+    items.forEach(el => {
+        if (el === forceSelectedElement) {
+            el.classList.add('selected');
+            return;
+        }
+
+        const path = el.dataset.path;
+        if (!path) {
+            el.classList.remove('selected');
+            return;
+        }
+
+        const isSelected = pane.selections.some(s => s.path === path);
+        if (isSelected) {
+            el.classList.add('selected');
+        } else {
+            el.classList.remove('selected');
+        }
+    });
 }
 
 function navigateUp(paneId) {
@@ -602,7 +704,6 @@ function navigateUp(paneId) {
 
 function navigateInto(paneId, folderName) {
     const pane = panes[paneId];
-    // Avoid double slashes logic
     const separator = pane.path.endsWith('/') ? '' : '/';
     const newPath = `${pane.path}${separator}${folderName}`;
     pane.path = newPath;
@@ -614,53 +715,68 @@ function handleKeyNavigation(e, paneId) {
     const pane = panes[paneId];
     const container = pane.element;
     const items = Array.from(container.getElementsByClassName('file-item'));
-    let selectedIndex = items.findIndex(item => item.classList.contains('selected'));
+
+    // Find active focus item
+    let activeIndex = items.findIndex(item => item.classList.contains('active-focus'));
+
+    // Fallback: if no active focus, try finding a selected item, else 0
+    if (activeIndex === -1) {
+        const selectedEl = container.querySelector('.selected');
+        if (selectedEl) {
+            activeIndex = items.indexOf(selectedEl);
+            selectedEl.classList.add('active-focus'); // Sync focus
+        }
+    }
+
+    let nextIndex = activeIndex;
 
     if (e.key === 'ArrowDown') {
         e.preventDefault();
-        if (selectedIndex < items.length - 1) {
-            const newItem = items[selectedIndex + 1];
-            selectItem(paneId, newItem);
-            updateSelectionFromElement(paneId, newItem);
-        } else if (selectedIndex === -1 && items.length > 0) {
-            selectItem(paneId, items[0]);
-            updateSelectionFromElement(paneId, items[0]);
+        if (activeIndex < items.length - 1) {
+            nextIndex = activeIndex + 1;
+        } else if (activeIndex === -1 && items.length > 0) {
+            nextIndex = 0;
         }
     } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        if (selectedIndex > 0) {
-            const newItem = items[selectedIndex - 1];
-            selectItem(paneId, newItem);
-            updateSelectionFromElement(paneId, newItem);
+        if (activeIndex > 0) {
+            nextIndex = activeIndex - 1;
+        } else if (activeIndex === -1 && items.length > 0) {
+            nextIndex = items.length - 1; // Wrap to bottom? Or stick to top. Let's stick top.
+            nextIndex = 0;
         }
     } else if (e.key === 'Enter') {
         e.preventDefault();
-        if (selectedIndex !== -1) {
-            const item = items[selectedIndex];
+        if (activeIndex !== -1) {
+            const item = items[activeIndex];
             if (item.dataset.name === '..') {
                 navigateUp(paneId);
             } else if (item.dataset.isDirectory === 'true') {
                 navigateInto(paneId, item.dataset.name);
             }
         }
-    }
-}
-
-function updateSelectionFromElement(paneId, element) {
-    const name = element.dataset.name;
-    const isDirectory = element.dataset.isDirectory === 'true';
-    const path = element.dataset.path;
-
-    if (name === '..') {
-        panes[paneId].selection = null;
+        return;
+    } else {
         return;
     }
 
-    panes[paneId].selection = {
-        name,
-        path,
-        isDirectory
-    };
+    if (nextIndex !== -1) {
+        const newItem = items[nextIndex];
+
+        // Move focus
+        items.forEach(el => el.classList.remove('active-focus'));
+        newItem.classList.add('active-focus');
+        newItem.scrollIntoView({ block: 'nearest' });
+
+        // Trigger Selection logic
+        // If Shift is held, we rely on the handleSelection logic which checks event.shiftKey
+        // We construct a mock event
+        handleSelection(paneId, null, newItem, {
+            shiftKey: e.shiftKey,
+            ctrlKey: e.ctrlKey,
+            metaKey: e.metaKey
+        });
+    }
 }
 
 // Global Shortcuts
@@ -703,9 +819,14 @@ window.addEventListener('keydown', (e) => {
 
 panes.left.element.addEventListener('focus', () => {
     activePaneId = 'left';
+    // Visual cue for active pane?
+    panes.left.element.classList.add('focused-pane');
+    panes.right.element.classList.remove('focused-pane');
 });
 panes.right.element.addEventListener('focus', () => {
     activePaneId = 'right';
+    panes.right.element.classList.add('focused-pane');
+    panes.left.element.classList.remove('focused-pane');
 });
 
 panes.left.element.addEventListener('keydown', (e) => {
