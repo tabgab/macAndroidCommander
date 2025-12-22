@@ -12,8 +12,14 @@ A Midnight Commander-inspired dual-pane file manager for macOS and Android. Mana
 *   **File Operations**:
     *   **F3 View**: Quick look at text files. Opens non-text files (PDF, Images, Office docs) in the default system application.
     *   **F4 Edit**: Edit text files directly (saves back to Android).
-    *   **F5 Copy**: Copy files/directories between Mac and Android.
-    *   **F8 Delete**: Delete files/directories.
+    *   **F5 Copy**: Copy files/directories between Mac and Android. Supports multiple files.
+    *   **F7 Rename**: Rename a file or directory.
+    *   **F8 Delete**: Delete files/directories. Supports multiple files.
+    *   **F9 Size**: Calculate directory size.
+    *   **Multi-Selection**:
+        *   **Mouse**: Click to select. Shift+Click to select a range.
+        *   **Keyboard**: Shift+Up/Down to select a range.
+        *   **Unified State**: Selection state is shared between mouse and keyboard actions.
 *   **Device Management**: Auto-detects connected devices; supports multiple devices.
 *   **Robust Copying**: Handles large directories and symlinks correctly.
 
