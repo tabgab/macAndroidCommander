@@ -4,19 +4,14 @@
 
 Before running Mac Android Commander, ensure you have the following installed:
 
-1.  **Node.js & npm**:
+1.  **Node.js & npm** (Only for running from source):
     *   Download from [nodejs.org](https://nodejs.org/) or install via Homebrew:
         ```bash
         brew install node
         ```
 
-2.  **Android Platform Tools (ADB)**:
-    *   The application relies on `adb` to communicate with your Android device.
-    *   Install via Homebrew:
-        ```bash
-        brew install android-platform-tools
-        ```
-    *   **Verify Installation**: Open a terminal and run `adb devices`. You should see a list of attached devices (or an empty list if none are connected).
+2.  **No ADB Install Required**:
+    *   The application now bundles the Android Platform Tools (ADB), so you do **not** need to install them manually.
 
 ## Setup
 

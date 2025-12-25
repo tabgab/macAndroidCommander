@@ -8,6 +8,16 @@ const execPromise = util.promisify(exec);
 const readdirPromise = util.promisify(fs.readdir);
 const statPromise = util.promisify(fs.stat);
 
+function getAdbPath() {
+    let adbPath;
+    if (app.isPackaged) {
+        adbPath = path.join(process.resourcesPath, 'bin', 'platform-tools', 'adb');
+    } else {
+        adbPath = path.join(__dirname, 'bin', 'platform-tools', 'adb');
+    }
+    return adbPath;
+}
+
 function createWindow() {
     const mainWindow = new BrowserWindow({
         width: 1200,
@@ -35,7 +45,7 @@ function startDeviceTracking(mainWindow) {
 
     console.log('Starting ADB device tracking...');
     // adb track-devices prints output whenever device state changes
-    adbTrackerProcess = spawn('adb', ['track-devices']);
+    adbTrackerProcess = spawn(getAdbPath(), ['track-devices']);
 
     adbTrackerProcess.stdout.on('data', (data) => {
         console.log(`ADB Tracker: Device list changed`);
@@ -107,7 +117,7 @@ ipcMain.handle('list-local-files', async (event, dirPath) => {
 // List Devices
 ipcMain.handle('list-devices', async () => {
     try {
-        const { stdout } = await execPromise('adb devices');
+        const { stdout } = await execPromise(`"${getAdbPath()}" devices`);
         const lines = stdout.split('\n');
         // First line is "List of devices attached"
         // Subsequent lines are "serial\tdevice"
@@ -160,7 +170,7 @@ ipcMain.handle('list-android-files', async (event, dirPath, deviceSerial) => {
         // usage: adb shell ls -l <quoted_path>
 
         const safePath = quote(dirPath); // This produces ' "path" '
-        const { stdout } = await execPromise(`adb ${serialCmd} shell ls -l ${safePath}`);
+        const { stdout } = await execPromise(`"${getAdbPath()}" ${serialCmd} shell ls -l ${safePath}`);
 
         // Parse stdout
         const lines = stdout.split('\n');
@@ -264,20 +274,20 @@ ipcMain.handle('copy-to-android', async (event, localPath, androidPath, deviceSe
             const safeLocalName = escapeLocal(localName);
 
             await execPromise(`cd ${safeLocalDir} && tar -chf ${safeTempTarPath} ${safeLocalName}`);
-            await execPromise(`adb ${serialCmd} push ${safeTempTarPath} ${escapeLocal(androidTempPath)}`);
+            await execPromise(`"${getAdbPath()}" ${serialCmd} push ${safeTempTarPath} ${escapeLocal(androidTempPath)}`);
 
             // Extract on Android: adb shell ...
             // These ARE shell commands so they need 'quote()'
             const safeAndroidDestDir = quote(androidDestDir);
             const safeAndroidTempPath = quote(androidTempPath);
 
-            await execPromise(`adb ${serialCmd} shell "mkdir -p ${safeAndroidDestDir} && cd ${safeAndroidDestDir} && tar -xf ${safeAndroidTempPath}"`);
+            await execPromise(`"${getAdbPath()}" ${serialCmd} shell "mkdir -p ${safeAndroidDestDir} && cd ${safeAndroidDestDir} && tar -xf ${safeAndroidTempPath}"`);
 
             await util.promisify(fs.unlink)(tempTarPath);
-            await execPromise(`adb ${serialCmd} shell rm ${safeAndroidTempPath}`);
+            await execPromise(`"${getAdbPath()}" ${serialCmd} shell rm ${safeAndroidTempPath}`);
 
         } else {
-            await execPromise(`adb ${serialCmd} push ${safeLocal} ${safeRemote}`);
+            await execPromise(`"${getAdbPath()}" ${serialCmd} push ${safeLocal} ${safeRemote}`);
         }
         return true;
     } catch (error) {
@@ -306,7 +316,7 @@ ipcMain.handle('copy-android-android', async (event, sourcePath, destPath, devic
         const safeSource = quote(sourcePath);
         const safeDest = quote(destPath);
         // Note: cp -r on Android (Toybox) works usually.
-        await execPromise(`adb ${serialCmd} shell cp -r ${safeSource} ${safeDest}`);
+        await execPromise(`"${getAdbPath()}" ${serialCmd} shell cp -r ${safeSource} ${safeDest}`);
         return true;
     } catch (error) {
         console.error('Error copying android-android:', error);
@@ -319,7 +329,7 @@ ipcMain.handle('copy-to-mac', async (event, androidPath, localPath, deviceSerial
         const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
         const safeAndroid = escapeLocal(androidPath);
         const safeLocal = escapeLocal(localPath);
-        await execPromise(`adb ${serialCmd} pull ${safeAndroid} ${safeLocal}`);
+        await execPromise(`"${getAdbPath()}" ${serialCmd} pull ${safeAndroid} ${safeLocal}`);
         return true;
     } catch (error) {
         console.error('Error copying to mac:', error);
@@ -346,7 +356,7 @@ ipcMain.handle('delete-android', async (event, filePath, deviceSerial) => {
     try {
         const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
         const safePath = quote(filePath);
-        await execPromise(`adb ${serialCmd} shell rm -rf ${safePath}`);
+        await execPromise(`"${getAdbPath()}" ${serialCmd} shell rm -rf ${safePath}`);
         return true;
     } catch (error) {
         console.error('Error deleting android file:', error);
@@ -369,7 +379,7 @@ ipcMain.handle('rename-android', async (event, oldPath, newPath, deviceSerial) =
         const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
         const safeOld = quote(oldPath);
         const safeNew = quote(newPath);
-        await execPromise(`adb ${serialCmd} shell mv ${safeOld} ${safeNew}`);
+        await execPromise(`"${getAdbPath()}" ${serialCmd} shell mv ${safeOld} ${safeNew}`);
         return true;
     } catch (error) {
         console.error('Error renaming android file:', error);
@@ -394,7 +404,7 @@ ipcMain.handle('get-android-dir-size', async (event, dirPath, deviceSerial) => {
     try {
         const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
         const safePath = quote(dirPath);
-        const { stdout } = await execPromise(`adb ${serialCmd} shell du -k -d 0 ${safePath}`);
+        const { stdout } = await execPromise(`"${getAdbPath()}" ${serialCmd} shell du -k -d 0 ${safePath}`);
         const sizeStr = stdout.split(/\s+/)[0];
         const sizeKB = parseInt(sizeStr, 10);
         return sizeKB * 1024;
@@ -432,7 +442,7 @@ ipcMain.handle('read-android-file', async (event, filePath, deviceSerial) => {
         // Use pull to temp file to avoid buffer limits of exec
         const tempPath = path.join(app.getPath('temp'), `temp_read_${Date.now()}_${Math.random().toString(36).substring(7)}`);
 
-        await execPromise(`adb ${serialCmd} pull "${filePath}" "${tempPath}"`);
+        await execPromise(`"${getAdbPath()}" ${serialCmd} pull "${filePath}" "${tempPath}"`);
 
         const content = await util.promisify(fs.readFile)(tempPath, 'utf8');
 
@@ -453,7 +463,7 @@ ipcMain.handle('save-android-file', async (event, filePath, content, deviceSeria
         const tempPath = path.join(app.getPath('temp'), 'temp_edit_file');
         await util.promisify(fs.writeFile)(tempPath, content, 'utf8');
 
-        await execPromise(`adb ${serialCmd} push "${tempPath}" "${filePath}"`);
+        await execPromise(`"${getAdbPath()}" ${serialCmd} push "${tempPath}" "${filePath}"`);
 
         // Cleanup
         await util.promisify(fs.unlink)(tempPath);
@@ -482,7 +492,7 @@ ipcMain.handle('pull-temp-android', async (event, filePath, deviceSerial) => {
         const tempName = `temp_view_${Date.now()}_${Math.random().toString(36).substring(7)}${ext}`;
         const tempPath = path.join(app.getPath('temp'), tempName);
 
-        await execPromise(`adb ${serialCmd} pull "${filePath}" "${tempPath}"`);
+        await execPromise(`"${getAdbPath()}" ${serialCmd} pull "${filePath}" "${tempPath}"`);
         return tempPath;
     } catch (error) {
         console.error('Error pulling temp android file:', error);

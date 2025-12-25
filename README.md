@@ -22,14 +22,14 @@ A Midnight Commander-inspired dual-pane file manager for macOS and Android. Mana
         *   **Unified State**: Selection state is shared between mouse and keyboard actions.
     *   **Device Management**: Auto-detects connected devices; supports multiple devices.
     *   **File Sorting**: Sort files by Name, Date Modified, or Date Created.
+*   **Plug and Play**: Bundled ADB means no driver or tool installation required. Just connect your phone.
 *   **Robust Copying**: Handles large directories and symlinks correctly.
 
 ## Prerequisites
 
 *   **macOS**: Currently designed for macOS.
-*   **ADB (Android Debug Bridge)**: Must be installed and in your PATH.
-    *   Install via Homebrew: `brew install android-platform-tools`
-*   **Node.js**: Required to run the application.
+*   **Android Device**: Enabled for USB Debugging.
+*   **Node.js**: Required to run the application from source (development only).
 
 ## Quick Start
 
