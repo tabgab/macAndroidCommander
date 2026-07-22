@@ -43,6 +43,8 @@ const btnSaveFile = document.getElementById('btn-save-file');
 const btnCloseEditor = document.getElementById('btn-close-editor');
 const closeEditorX = document.getElementById('close-editor');
 
+let currentEditingFile = null; // { paneId: 'left'|'right', path: '...', name: '...' }
+
 
 // Rename Modal
 const renameModal = document.getElementById('rename-modal');
@@ -236,7 +238,18 @@ async function loadPaneFiles(paneId) {
         renderFileList(paneId, files); // Update renderFileList to use paneId
     } catch (error) {
         console.error(`Failed to load files for ${paneId}:`, error);
-        pane.element.innerHTML = `<div class="error">Error loading files</div>`;
+        pane.selections = [];
+        pane.lastSelectedPath = null;
+        pane.element.innerHTML = '';
+        // Keep ".." so the user can back out of unreadable paths
+        // (permission-denied directories, symlinks pointing to files)
+        if (pane.path !== '/') {
+            pane.element.appendChild(createUpEntry(paneId));
+        }
+        const errDiv = document.createElement('div');
+        errDiv.className = 'error';
+        errDiv.textContent = 'Error loading files';
+        pane.element.appendChild(errDiv);
     }
 }
 
@@ -313,8 +326,9 @@ closeRenameX.onclick = hideRenameModal;
 // Directory Size Logic
 async function performCalculateDirSize() {
     const pane = panes[activePaneId];
-    const file = pane.selection;
-    if (!file || !file.isDirectory || file.name === '..') return;
+    if (!pane.selections || pane.selections.length !== 1) return alert('Please select exactly one directory to calculate its size.');
+    const file = pane.selections[0];
+    if (!file.isDirectory || file.name === '..') return;
 
     const container = pane.element;
     const items = Array.from(container.getElementsByClassName('file-item'));
@@ -588,18 +602,7 @@ function renderFileList(paneId, files) {
 
     // Add ".." entry if not at root
     if (currentPath !== '/') {
-        const upDiv = document.createElement('div');
-        upDiv.className = 'file-item directory';
-        upDiv.innerHTML = `<span class="file-name">..</span><span class="file-size"></span>`;
-        upDiv.dataset.name = '..';
-        upDiv.dataset.isDirectory = 'true';
-        upDiv.onclick = (e) => {
-            // Clicking .. should just select it like any other file (for operations)
-            // Double click navigates active pane up
-            handleSelection(paneId, { name: '..', isDirectory: true, path: null }, upDiv, e);
-        };
-        upDiv.ondblclick = () => navigateUp(paneId);
-        container.appendChild(upDiv);
+        container.appendChild(createUpEntry(paneId));
     }
 
     files.forEach(file => {
@@ -613,7 +616,13 @@ function renderFileList(paneId, files) {
             sizeText = formatBytes(file.size || 0);
         }
 
-        div.innerHTML = `<span class="file-name">${file.name}</span><span class="file-size">${sizeText}</span>`;
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'file-name';
+        nameSpan.textContent = file.name;
+        const sizeSpan = document.createElement('span');
+        sizeSpan.className = 'file-size';
+        sizeSpan.textContent = sizeText;
+        div.append(nameSpan, sizeSpan);
         div.dataset.name = file.name;
         div.dataset.isDirectory = file.isDirectory;
 
@@ -634,6 +643,21 @@ function renderFileList(paneId, files) {
 
         container.appendChild(div);
     });
+}
+
+function createUpEntry(paneId) {
+    const upDiv = document.createElement('div');
+    upDiv.className = 'file-item directory';
+    upDiv.innerHTML = `<span class="file-name">..</span><span class="file-size"></span>`;
+    upDiv.dataset.name = '..';
+    upDiv.dataset.isDirectory = 'true';
+    upDiv.onclick = (e) => {
+        // Clicking .. should just select it like any other file (for operations)
+        // Double click navigates active pane up
+        handleSelection(paneId, { name: '..', isDirectory: true, path: null }, upDiv, e);
+    };
+    upDiv.ondblclick = () => navigateUp(paneId);
+    return upDiv;
 }
 
 function handleSelection(paneId, fileObj, element, event) {

@@ -169,7 +169,10 @@ ipcMain.handle('list-android-files', async (event, dirPath, deviceSerial) => {
         // adb shell ls -l "path"
         // usage: adb shell ls -l <quoted_path>
 
-        const safePath = quote(dirPath); // This produces ' "path" '
+        // Trailing slash makes ls list the target of a symlinked directory
+        // instead of the symlink entry itself
+        const listPath = dirPath.endsWith('/') ? dirPath : dirPath + '/';
+        const safePath = quote(listPath); // This produces ' "path" '
         const { stdout } = await execPromise(`"${getAdbPath()}" ${serialCmd} shell ls -l ${safePath}`);
 
         // Parse stdout
@@ -185,8 +188,11 @@ ipcMain.handle('list-android-files', async (event, dirPath, deviceSerial) => {
             // Heuristic: Last part is usually name, but name can have spaces.
             // First part is permissions.
             const permissions = parts[0];
-            const isDirectory = permissions.startsWith('d');
+            // Symlinks count as directories so they can be navigated into;
+            // listing appends '/' so ls follows the link to its target
+            const isDirectory = permissions.startsWith('d') || permissions.startsWith('l');
 
+            let size = 0;
             if (!isDirectory && parts.length >= 5) {
                 size = parseInt(parts[4], 10) || 0;
             }
@@ -208,8 +214,15 @@ ipcMain.handle('list-android-files', async (event, dirPath, deviceSerial) => {
             }
 
             // If we assume the first 7 fields are metadata, the rest is name.
-            if (parts.length >= 8) {
-                const name = parts.slice(7).join(' ');
+            // Entries ls cannot stat (permission denied) print '?' for every field
+            // and a single '?' for the date, shifting the name one column left.
+            const nameStart = parts[1] === '?' ? 6 : 7;
+            if (parts.length >= nameStart + 1) {
+                let name = parts.slice(nameStart).join(' ');
+                // Symlinks are listed as "name -> target"; keep only the name
+                if (permissions.startsWith('l')) {
+                    name = name.split(' -> ')[0];
+                }
                 return {
                     name: name,
                     isDirectory: isDirectory,
