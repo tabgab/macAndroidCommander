@@ -1,10 +1,13 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
-const { exec, spawn } = require('child_process');
+const { exec, execFile, spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const util = require('util');
+const QRCode = require('qrcode');
 
 const execPromise = util.promisify(exec);
+const execFilePromise = util.promisify(execFile);
 const readdirPromise = util.promisify(fs.readdir);
 const statPromise = util.promisify(fs.stat);
 
@@ -70,11 +73,13 @@ function startDeviceTracking(mainWindow) {
 app.whenReady().then(() => {
     const mainWindow = createWindow();
     startDeviceTracking(mainWindow);
+    startWirelessAutoConnect();
 
     app.on('activate', function () {
         if (BrowserWindow.getAllWindows().length === 0) {
             const win = createWindow();
             startDeviceTracking(win);
+            startWirelessAutoConnect();
         }
     });
 });
@@ -82,6 +87,9 @@ app.whenReady().then(() => {
 app.on('window-all-closed', function () {
     if (adbTrackerProcess) {
         adbTrackerProcess.kill();
+    }
+    if (bonjourBrowser) {
+        bonjourBrowser.kill();
     }
     if (process.platform !== 'darwin') app.quit();
 });
@@ -114,29 +122,353 @@ ipcMain.handle('list-local-files', async (event, dirPath) => {
     }
 });
 
+// Runs adb without a shell, so user-typed addresses and codes cannot inject commands.
+// Returns stdout+stderr. Throws with adb's own message on a non-zero exit or timeout.
+async function runAdb(args, timeout = 15000) {
+    try {
+        const { stdout, stderr } = await execFilePromise(getAdbPath(), args, { timeout });
+        return (stdout + stderr).trim();
+    } catch (error) {
+        if (error.killed) {
+            throw new Error('The phone did not respond. Make sure the phone and this Mac are on the same Wi-Fi network, and check the IP address and port.');
+        }
+        const output = ((error.stdout || '') + (error.stderr || '')).trim();
+        throw new Error(output || error.message);
+    }
+}
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Wireless serials are "ip:port" (manual connect) or "adb-<id>._adb-tls-connect._tcp" (mDNS)
+const isWirelessSerial = (serial) => serial.includes(':') || serial.includes('._adb-tls-connect.');
+
+async function getDevices() {
+    // "adb devices -l" lines: "<serial>  <state> usb:... product:x model:Pixel_7 device:y transport_id:1"
+    const output = await runAdb(['devices', '-l']);
+    const devices = output
+        .split('\n')
+        .slice(1) // First line is "List of devices attached"
+        .map(line => line.trim())
+        .filter(line => line.length > 0 && !line.startsWith('*')) // "* daemon started" notices
+        .map(line => {
+            const match = line.match(/^(\S+)\s+(\S+)(.*)$/);
+            if (!match) return null;
+            const [, serial, state, rest] = match;
+            const model = (rest.match(/\bmodel:(\S+)/) || [])[1];
+            return {
+                serial,
+                state, // device, offline, unauthorized
+                model: model ? model.replace(/_/g, ' ') : null,
+                wireless: isWirelessSerial(serial),
+                aliases: [], // other serials of the same phone, hidden as duplicates
+            };
+        })
+        .filter(d => d !== null);
+    return mergeDuplicateWireless(devices);
+}
+
+// A phone can be connected twice over Wi-Fi: once as "ip:port" and once by its mDNS name
+// (adb auto-connect). Show it once. Keep the mDNS entry, because adb reconnects it by itself.
+const hardwareSerialCache = new Map(); // connection serial -> hardware serial
+
+async function mergeDuplicateWireless(devices) {
+    const wireless = devices.filter(d => d.wireless && d.state === 'device');
+    if (wireless.length < 2) return devices;
+
+    const byHardwareSerial = new Map();
+    for (const device of wireless) {
+        // "adb get-serialno" returns the connection name, so read the hardware serial instead
+        let hardwareSerial = hardwareSerialCache.get(device.serial);
+        if (!hardwareSerial) {
+            try {
+                hardwareSerial = await runAdb(['-s', device.serial, 'shell', 'getprop', 'ro.serialno'], 5000);
+            } catch (error) {
+                continue;
+            }
+            if (!hardwareSerial) continue;
+            hardwareSerialCache.set(device.serial, hardwareSerial);
+        }
+        const group = byHardwareSerial.get(hardwareSerial) || [];
+        group.push(device);
+        byHardwareSerial.set(hardwareSerial, group);
+    }
+
+    const hidden = new Set();
+    for (const group of byHardwareSerial.values()) {
+        if (group.length < 2) continue;
+        const keep = group.find(d => d.serial.includes('._adb-tls-connect.')) || group[0];
+        for (const device of group) {
+            if (device === keep) continue;
+            keep.aliases.push(device.serial);
+            hidden.add(device);
+        }
+    }
+    return devices.filter(d => !hidden.has(d));
+}
+
 // List Devices
 ipcMain.handle('list-devices', async () => {
     try {
-        const { stdout } = await execPromise(`"${getAdbPath()}" devices`);
-        const lines = stdout.split('\n');
-        // First line is "List of devices attached"
-        // Subsequent lines are "serial\tdevice"
-        const devices = lines
-            .slice(1)
-            .filter(line => line.trim().length > 0)
-            .map(line => {
-                const parts = line.split('\t');
-                if (parts.length >= 2) {
-                    return { serial: parts[0], state: parts[1] }; // state: device, offline, unauthorized
-                }
-                return null;
-            })
-            .filter(d => d !== null);
-        return devices;
+        return await getDevices();
     } catch (error) {
         console.error('Error listing devices:', error);
         return []; // Return empty if adb fails
     }
+});
+
+// Wireless Debugging (Android 11+)
+
+const HOST_PORT_RE = /^([A-Za-z0-9.\-]+|\[[0-9A-Fa-f:.%]+\]):\d{1,5}$/;
+
+function checkHostPort(hostPort) {
+    const value = String(hostPort || '').trim();
+    if (!HOST_PORT_RE.test(value)) {
+        throw new Error('Enter the address as IP:port, for example 192.168.1.20:37099.');
+    }
+    return value;
+}
+
+const hostOf = (hostPort) => hostPort.slice(0, hostPort.lastIndexOf(':'));
+
+// "adb mdns services" lines: "<instance>\t_adb-tls-connect._tcp\t192.168.1.20:41234"
+async function getMdnsServices() {
+    const output = await runAdb(['mdns', 'services'], 5000);
+    const services = [];
+    for (const line of output.split('\n')) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 3) continue;
+        const typeMatch = parts[1].match(/_adb-tls-(pairing|connect)\._tcp/);
+        if (!typeMatch) continue;
+        let address = parts[parts.length - 1];
+        const lastColon = address.lastIndexOf(':');
+        const host = address.slice(0, lastColon);
+        if (host.includes(':') && !host.startsWith('[')) {
+            address = `[${host}]${address.slice(lastColon)}`; // bracket IPv6 hosts
+        }
+        services.push({ name: parts[0], type: typeMatch[1], hostPort: address });
+    }
+    return services;
+}
+
+async function connectDevice(hostPort) {
+    // "adb connect" exits 0 even on failure, so the output text decides the result
+    const output = await runAdb(['connect', hostPort]);
+    if (!/^(already )?connected to /m.test(output)) {
+        // An unpaired phone also fails here with only "failed to connect to ..."
+        const reason = (output || `Could not connect to ${hostPort}`).replace(/\.?$/, '.');
+        throw new Error(`${reason} If this phone is not paired with this Mac yet, pair it first.`);
+    }
+    return output;
+}
+
+async function pairDevice(hostPort, code) {
+    const failHint = 'Pairing failed. Keep the pairing dialog open on the phone, and check the IP address, port and code.';
+    let output;
+    try {
+        output = await runAdb(['pair', hostPort, code], 30000);
+    } catch (error) {
+        throw new Error(`${failHint} (${error.message})`);
+    }
+    if (!/Successfully paired/i.test(output)) {
+        throw new Error(`${failHint} (${output || 'no response'})`);
+    }
+    // "Successfully paired to 192.168.1.20:37099 [guid=adb-XXXX-yyyy]"
+    // The guid is also the phone's mDNS instance name for its connect service.
+    const guid = (output.match(/\[guid=([^\]]+)\]/) || [])[1] || null;
+    return { paired: true, guid, ip: hostOf(hostPort) };
+}
+
+// Runs a macOS Bonjour query (dns-sd never exits by itself) until its output matches
+// the pattern. Resolves with the match, or with null after the timeout.
+// adb's built-in mDNS discovery on macOS can take minutes to notice a phone. Bonjour answers at once.
+function queryBonjour(args, pattern, timeout = 3000) {
+    return new Promise(resolve => {
+        let output = '';
+        let done = false;
+        const child = spawn('dns-sd', args);
+        const finish = (match) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            child.kill();
+            resolve(match);
+        };
+        const timer = setTimeout(() => finish(null), timeout);
+        child.on('error', () => finish(null)); // dns-sd missing
+        child.stdout.on('data', (data) => {
+            output += data;
+            const match = output.match(pattern);
+            if (match) finish(match);
+        });
+    });
+}
+
+// Returns { host, port } of a paired phone's connect service
+async function resolveConnectService(guid) {
+    // "adb-XXXX-yyyy._adb-tls-connect._tcp.local. can be reached at Android.local.:45489 (interface 14)"
+    const match = await queryBonjour(['-L', guid, '_adb-tls-connect._tcp', 'local.'], /can be reached at (\S+?)\.?:(\d+)/);
+    return match ? { host: match[1], port: match[2] } : null;
+}
+
+// Returns the IPv4 address of a ".local" host name, or null
+async function resolveIPv4(host) {
+    // "15:19:08.512  Add  40000002  14  Android.local.  192.168.0.195  120"
+    const match = await queryBonjour(['-G', 'v4', host], /\sAdd\s.*?\s(\d+\.\d+\.\d+\.\d+)\s/);
+    return match ? match[1] : null;
+}
+
+// Background reconnect: watch Bonjour for phones with Wireless debugging on, and connect
+// the ones this Mac has paired with. adb would do this too, but often minutes later.
+let bonjourBrowser = null;
+let autoConnectTimer = null;
+const bonjourPhones = new Set(); // mDNS instance names currently announced
+const autoConnectLastTry = new Map(); // name -> time of the last connect attempt
+
+function isPairedPhone(name) {
+    // adb records each paired phone's guid (= mDNS instance name) in this file
+    const dir = process.env.ANDROID_USER_HOME || path.join(app.getPath('home'), '.android');
+    try {
+        return fs.readFileSync(path.join(dir, 'adb_known_hosts.pb'), 'latin1').includes(name);
+    } catch (error) {
+        return false;
+    }
+}
+
+async function autoConnectPhone(name) {
+    const lastTry = autoConnectLastTry.get(name) || 0;
+    if (Date.now() - lastTry < 30000 || !isPairedPhone(name)) return;
+    autoConnectLastTry.set(name, Date.now());
+    try {
+        const devices = await getDevices();
+        if (devices.some(d => [d.serial, ...d.aliases].some(s => s.startsWith(name)))) return;
+
+        const service = await resolveConnectService(name);
+        if (!service) return;
+        const address = await resolveIPv4(service.host);
+        if (!address) return;
+        if (devices.some(d => [d.serial, ...d.aliases].includes(`${address}:${service.port}`))) return;
+        await connectDevice(`${address}:${service.port}`);
+        console.log(`Wireless: connected to paired phone ${name}`);
+    } catch (error) {
+        console.error(`Wireless: could not connect to ${name}:`, error.message);
+    }
+}
+
+function startWirelessAutoConnect() {
+    if (bonjourBrowser) return;
+    bonjourBrowser = spawn('dns-sd', ['-B', '_adb-tls-connect._tcp', 'local.']);
+    let pending = '';
+    bonjourBrowser.on('error', (error) => console.error('Wireless: Bonjour browse failed:', error.message));
+    bonjourBrowser.stdout.on('data', (data) => {
+        const lines = (pending + data).split('\n');
+        pending = lines.pop();
+        for (const line of lines) {
+            // "15:12:16.089  Add  2  14 local.  _adb-tls-connect._tcp.  adb-R5CY12Z63XT-GUCRHD"
+            const match = line.match(/\s(Add|Rmv)\s+\d+\s+\d+\s+\S+\s+_adb-tls-connect\._tcp\.\s+(\S+)\s*$/);
+            if (!match) continue;
+            const [, action, name] = match;
+            if (action === 'Add') {
+                bonjourPhones.add(name);
+                autoConnectPhone(name);
+            } else {
+                bonjourPhones.delete(name);
+            }
+        }
+    });
+    bonjourBrowser.on('close', () => { bonjourBrowser = null; });
+
+    // Retry phones that are still announced, for example after the phone dropped off Wi-Fi briefly
+    if (!autoConnectTimer) {
+        autoConnectTimer = setInterval(() => bonjourPhones.forEach(name => autoConnectPhone(name)), 30000);
+        autoConnectTimer.unref();
+    }
+}
+
+// After pairing, connect to the phone. adb would also connect by itself, but only after
+// its own mDNS discovery notices the phone, which can take minutes on macOS.
+async function finishPairing(guid, ip) {
+    const matches = (d) => d.state === 'device' &&
+        [d.serial, ...d.aliases].some(s => (guid && s.startsWith(guid)) || s.startsWith(ip + ':'));
+
+    // About 30 seconds. The background watcher keeps trying after that.
+    for (let attempt = 0; attempt < 6; attempt++) {
+        let device = (await getDevices()).find(matches);
+        if (device) return { connected: true, serial: device.serial };
+
+        let hostPort = null;
+        const service = guid ? await resolveConnectService(guid) : null;
+        if (service) {
+            hostPort = `${ip}:${service.port}`;
+        } else {
+            const services = await getMdnsServices().catch(() => []);
+            const mdnsService = services.find(s => s.type === 'connect' &&
+                ((guid && s.name === guid) || s.hostPort.startsWith(ip + ':')));
+            if (mdnsService) hostPort = mdnsService.hostPort;
+        }
+
+        if (hostPort) {
+            try {
+                await connectDevice(hostPort);
+                device = (await getDevices()).find(matches);
+                if (device) return { connected: true, serial: device.serial };
+            } catch (error) {
+                console.error('Connect after pairing failed:', error.message);
+            }
+        }
+        await sleep(2000);
+    }
+    return { connected: false };
+}
+
+ipcMain.handle('adb-finish-pairing', async (event, guid, ip) => {
+    return finishPairing(guid ? String(guid) : null, String(ip || ''));
+});
+
+ipcMain.handle('adb-mdns-services', async () => {
+    try {
+        return await getMdnsServices();
+    } catch (error) {
+        console.error('Error listing mDNS services:', error);
+        return [];
+    }
+});
+
+ipcMain.handle('adb-pair', async (event, hostPort, code) => {
+    const target = checkHostPort(hostPort);
+    const pairingCode = String(code || '').replace(/\s+/g, '');
+    if (!/^\d{6}$/.test(pairingCode)) {
+        throw new Error('The pairing code has 6 digits.');
+    }
+    return pairDevice(target, pairingCode);
+});
+
+ipcMain.handle('adb-connect', async (event, hostPort) => {
+    const target = checkHostPort(hostPort);
+    await connectDevice(target);
+    const devices = await getDevices();
+    const device = devices.find(d => d.serial === target || d.aliases.includes(target)) || { serial: target };
+    return { connected: true, serial: device.serial };
+});
+
+// QR pairing: the phone scans "WIFI:T:ADB;S:<name>;P:<password>;;" and then
+// announces a pairing service with instance name <name> over mDNS.
+const qrSessions = new Map(); // name -> password
+
+ipcMain.handle('qr-pairing-start', async () => {
+    qrSessions.clear();
+    const name = 'adbft-' + crypto.randomBytes(5).toString('hex');
+    const password = crypto.randomBytes(9).toString('base64').replace(/[^A-Za-z0-9]/g, '').slice(0, 10);
+    qrSessions.set(name, password);
+    const dataUrl = await QRCode.toDataURL(`WIFI:T:ADB;S:${name};P:${password};;`, { margin: 2, width: 240 });
+    return { name, dataUrl };
+});
+
+ipcMain.handle('qr-pairing-pair', async (event, name, hostPort) => {
+    const password = qrSessions.get(name);
+    if (!password) throw new Error('This QR code is no longer valid. Create a new code.');
+    const result = await pairDevice(checkHostPort(hostPort), password);
+    qrSessions.delete(name);
+    return result;
 });
 
 const quoteForRemote = (path) => {
@@ -165,7 +497,7 @@ const quote = (path) => {
 // List Android Files
 ipcMain.handle('list-android-files', async (event, dirPath, deviceSerial) => {
     try {
-        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const serialCmd = deviceSerial ? `-s ${escapeLocal(deviceSerial)}` : '';
         // adb shell ls -l "path"
         // usage: adb shell ls -l <quoted_path>
 
@@ -248,7 +580,7 @@ ipcMain.handle('list-android-files', async (event, dirPath, deviceSerial) => {
 
 ipcMain.handle('copy-to-android', async (event, localPath, androidPath, deviceSerial) => {
     try {
-        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const serialCmd = deviceSerial ? `-s ${escapeLocal(deviceSerial)}` : '';
         const stats = await statPromise(localPath);
         // Note: For 'push', adb handles local path quotes locally (passed as arg to spawn if we used spawn, but here exec).
         // For remote path, it must be quoted for remote shell?
@@ -325,7 +657,7 @@ ipcMain.handle('copy-local-local', async (event, sourcePath, destPath) => {
 
 ipcMain.handle('copy-android-android', async (event, sourcePath, destPath, deviceSerial) => {
     try {
-        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const serialCmd = deviceSerial ? `-s ${escapeLocal(deviceSerial)}` : '';
         const safeSource = quote(sourcePath);
         const safeDest = quote(destPath);
         // Note: cp -r on Android (Toybox) works usually.
@@ -339,7 +671,7 @@ ipcMain.handle('copy-android-android', async (event, sourcePath, destPath, devic
 
 ipcMain.handle('copy-to-mac', async (event, androidPath, localPath, deviceSerial) => {
     try {
-        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const serialCmd = deviceSerial ? `-s ${escapeLocal(deviceSerial)}` : '';
         const safeAndroid = escapeLocal(androidPath);
         const safeLocal = escapeLocal(localPath);
         await execPromise(`"${getAdbPath()}" ${serialCmd} pull ${safeAndroid} ${safeLocal}`);
@@ -367,7 +699,7 @@ ipcMain.handle('delete-local', async (event, filePath) => {
 
 ipcMain.handle('delete-android', async (event, filePath, deviceSerial) => {
     try {
-        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const serialCmd = deviceSerial ? `-s ${escapeLocal(deviceSerial)}` : '';
         const safePath = quote(filePath);
         await execPromise(`"${getAdbPath()}" ${serialCmd} shell rm -rf ${safePath}`);
         return true;
@@ -389,7 +721,7 @@ ipcMain.handle('rename-local', async (event, oldPath, newPath) => {
 
 ipcMain.handle('rename-android', async (event, oldPath, newPath, deviceSerial) => {
     try {
-        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const serialCmd = deviceSerial ? `-s ${escapeLocal(deviceSerial)}` : '';
         const safeOld = quote(oldPath);
         const safeNew = quote(newPath);
         await execPromise(`"${getAdbPath()}" ${serialCmd} shell mv ${safeOld} ${safeNew}`);
@@ -415,7 +747,7 @@ ipcMain.handle('get-local-dir-size', async (event, dirPath) => {
 
 ipcMain.handle('get-android-dir-size', async (event, dirPath, deviceSerial) => {
     try {
-        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const serialCmd = deviceSerial ? `-s ${escapeLocal(deviceSerial)}` : '';
         const safePath = quote(dirPath);
         const { stdout } = await execPromise(`"${getAdbPath()}" ${serialCmd} shell du -k -d 0 ${safePath}`);
         const sizeStr = stdout.split(/\s+/)[0];
@@ -451,7 +783,7 @@ ipcMain.handle('save-local-file', async (event, filePath, content) => {
 
 ipcMain.handle('read-android-file', async (event, filePath, deviceSerial) => {
     try {
-        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const serialCmd = deviceSerial ? `-s ${escapeLocal(deviceSerial)}` : '';
         // Use pull to temp file to avoid buffer limits of exec
         const tempPath = path.join(app.getPath('temp'), `temp_read_${Date.now()}_${Math.random().toString(36).substring(7)}`);
 
@@ -471,7 +803,7 @@ ipcMain.handle('read-android-file', async (event, filePath, deviceSerial) => {
 
 ipcMain.handle('save-android-file', async (event, filePath, content, deviceSerial) => {
     try {
-        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const serialCmd = deviceSerial ? `-s ${escapeLocal(deviceSerial)}` : '';
         // Write content to a temp file locally, then push
         const tempPath = path.join(app.getPath('temp'), 'temp_edit_file');
         await util.promisify(fs.writeFile)(tempPath, content, 'utf8');
@@ -500,7 +832,7 @@ ipcMain.handle('open-external', async (event, filePath) => {
 
 ipcMain.handle('pull-temp-android', async (event, filePath, deviceSerial) => {
     try {
-        const serialCmd = deviceSerial ? `-s ${deviceSerial}` : '';
+        const serialCmd = deviceSerial ? `-s ${escapeLocal(deviceSerial)}` : '';
         const ext = path.extname(filePath);
         const tempName = `temp_view_${Date.now()}_${Math.random().toString(36).substring(7)}${ext}`;
         const tempPath = path.join(app.getPath('temp'), tempName);

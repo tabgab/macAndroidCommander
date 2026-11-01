@@ -187,3 +187,86 @@ button:hover {
         transform: rotate(360deg);
     }
 }
+/* Wireless Modal */
+.wireless-content {
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+.wireless-content .hint {
+    color: #ccc;
+    font-size: 0.9em;
+}
+
+.tab-bar {
+    display: flex;
+    margin: 10px 0;
+    border-bottom: 1px solid #666;
+}
+
+.tab-button {
+    margin-right: 4px;
+    border-bottom: none;
+}
+
+.tab-button.active {
+    background-color: #3498db;
+    border-color: #3498db;
+}
+
+.tab-panel .field {
+    display: block;
+    margin-bottom: 10px;
+}
+
+.tab-panel .field input {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 4px;
+    padding: 5px;
+    background: #222;
+    color: white;
+    border: 1px solid #555;
+    font-family: monospace;
+}
+
+.qr-box {
+    width: 240px;
+    height: 240px;
+    margin: 10px 0;
+    background: #fff;
+}
+
+.qr-box img {
+    display: block;
+    width: 240px;
+    height: 240px;
+}
+
+.wireless-status {
+    min-height: 1.2em;
+}
+
+.wireless-status.error {
+    color: #ff6b6b;
+}
+
+.wireless-status.success {
+    color: #6bdc6b;
+}
+
+.found-list .found-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid #444;
+    font-family: monospace;
+    font-size: 0.9em;
+}
+
+.found-list .empty {
+    color: #999;
+    font-size: 0.9em;
+}

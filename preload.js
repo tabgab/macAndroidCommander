@@ -20,5 +20,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     renameLocal: (oldPath, newPath) => ipcRenderer.invoke('rename-local', oldPath, newPath),
     renameAndroid: (oldPath, newPath, deviceSerial) => ipcRenderer.invoke('rename-android', oldPath, newPath, deviceSerial),
     getLocalDirSize: (path) => ipcRenderer.invoke('get-local-dir-size', path),
-    getAndroidDirSize: (path, deviceSerial) => ipcRenderer.invoke('get-android-dir-size', path, deviceSerial)
+    getAndroidDirSize: (path, deviceSerial) => ipcRenderer.invoke('get-android-dir-size', path, deviceSerial),
+    mdnsServices: () => ipcRenderer.invoke('adb-mdns-services'),
+    pairDevice: (hostPort, code) => ipcRenderer.invoke('adb-pair', hostPort, code),
+    finishPairing: (guid, ip) => ipcRenderer.invoke('adb-finish-pairing', guid, ip),
+    connectDevice: (hostPort) => ipcRenderer.invoke('adb-connect', hostPort),
+    qrPairingStart: () => ipcRenderer.invoke('qr-pairing-start'),
+    qrPairingPair: (name, hostPort) => ipcRenderer.invoke('qr-pairing-pair', name, hostPort)
 });

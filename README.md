@@ -20,15 +20,16 @@ A Midnight Commander-inspired dual-pane file manager for macOS and Android. Mana
         *   **Mouse**: Click to select. Shift+Click to select a range.
         *   **Keyboard**: Shift+Up/Down to select a range.
         *   **Unified State**: Selection state is shared between mouse and keyboard actions.
-    *   **Device Management**: Auto-detects connected devices; supports multiple devices.
+    *   **Device Management**: Auto-detects connected devices; supports multiple devices. Shows the phone model and the connection type (USB or Wi-Fi).
+    *   **F2 Wireless**: Connect over Wi-Fi without a cable (Android 11+). Pair a phone once with a QR code or a pairing code. After that, it reconnects automatically whenever Wireless debugging is on.
     *   **File Sorting**: Sort files by Name, Date Modified, or Date Created.
-*   **Plug and Play**: Bundled ADB means no driver or tool installation required. Just connect your phone.
+*   **Plug and Play**: Bundled ADB means no driver or tool installation required. Just connect your phone with a cable, or pair it once over Wi-Fi.
 *   **Robust Copying**: Handles large directories and symlinks correctly.
 
 ## Prerequisites
 
 *   **macOS**: Currently designed for macOS.
-*   **Android Device**: Enabled for USB Debugging.
+*   **Android Device**: Enabled for USB Debugging, or for Wireless debugging (Android 11+, same Wi-Fi network as the Mac).
 *   **Node.js**: Required to run the application from source (development only).
 
 ## Quick Start

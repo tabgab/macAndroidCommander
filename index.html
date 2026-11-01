@@ -47,6 +47,7 @@
         </div>
     </div>
     <div id="footer">
+        <button id="btn-wireless">F2 Wireless</button>
         <button id="btn-view">F3 View</button>
         <button id="btn-edit">F4 Edit</button>
         <button id="btn-copy">F5 Copy</button>
@@ -100,7 +101,9 @@
                     from this computer.</li>
                 <li><strong>Check Cable:</strong> Ensure you are using a data-capable USB cable.</li>
             </ol>
+            <p>No cable? On Android 11 or later you can connect over Wi-Fi.</p>
             <button id="btn-retry-devices">Retry Connection</button>
+            <button id="btn-help-wireless">Connect Wirelessly</button>
         </div>
     </div>
     <!-- Rename Modal -->
@@ -115,6 +118,57 @@
                 <button id="btn-confirm-rename">Rename</button>
                 <button id="btn-cancel-rename">Cancel</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Wireless Modal -->
+    <div id="wireless-modal" class="modal" style="display: none;">
+        <div class="modal-content wireless-content">
+            <span class="close-button" id="close-wireless">&times;</span>
+            <h2>Wireless Connection</h2>
+            <p class="hint">Requires Android 11 or later. Connect the phone and this Mac to the same Wi-Fi network.
+                On the phone, open <strong>Settings &gt; Developer options &gt; Wireless debugging</strong> and turn
+                it on. Pair each phone once. After that, the phone connects automatically whenever Wireless debugging
+                is on.</p>
+
+            <div class="tab-bar">
+                <button class="tab-button active" data-tab="qr">Pair with QR code</button>
+                <button class="tab-button" data-tab="code">Pair with pairing code</button>
+                <button class="tab-button" data-tab="connect">Connect (already paired)</button>
+            </div>
+
+            <div class="tab-panel" data-tab="qr">
+                <p>On the phone, tap <strong>Pair device with QR code</strong> and scan this code.</p>
+                <div class="qr-box"><img id="qr-image" alt="Pairing QR code"></div>
+                <button id="btn-qr-new">New Code</button>
+            </div>
+
+            <div class="tab-panel" data-tab="code" style="display: none;">
+                <p>On the phone, tap <strong>Pair device with pairing code</strong>. Type the values from that
+                    dialog.</p>
+                <label class="field">IP address &amp; port (shown in the pairing dialog)
+                    <input type="text" id="pair-host" placeholder="192.168.1.20:37099" spellcheck="false">
+                </label>
+                <label class="field">Wi-Fi pairing code
+                    <input type="text" id="pair-code" placeholder="123456" maxlength="7" inputmode="numeric">
+                </label>
+                <button id="btn-pair">Pair</button>
+            </div>
+
+            <div class="tab-panel" data-tab="connect" style="display: none;">
+                <p>Use this if a paired phone does not connect by itself, for example when the network blocks device
+                    discovery.</p>
+                <label class="field">IP address &amp; port (shown on the Wireless debugging screen, not in the
+                    pairing dialog)
+                    <input type="text" id="connect-host" placeholder="192.168.1.20:41234" spellcheck="false">
+                </label>
+                <button id="btn-connect">Connect</button>
+            </div>
+
+            <p id="wireless-status" class="wireless-status"></p>
+
+            <h3>Phones found on this network</h3>
+            <div id="wireless-found" class="found-list"></div>
         </div>
     </div>
 

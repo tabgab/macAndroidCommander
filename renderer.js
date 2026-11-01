@@ -27,7 +27,8 @@ const panes = {
         pathDisplay: document.getElementById('right-path'),
         selectElement: document.getElementById('right-device-select'),
         sortElement: document.querySelector('.sort-select[data-pane="right"]'),
-        sortOrder: 'name'
+        sortOrder: 'name',
+        autoPickDevice: true // show the first connected phone here, until the user picks a device
     }
 };
 
@@ -105,10 +106,25 @@ async function refreshDevices() {
         const devices = await window.electronAPI.listDevices();
 
         // Update global device tracker if needed, but primarily update dropdowns
-        const deviceOptions = devices.map(d => ({
-            value: d.serial,
-            label: `${d.serial} (${d.state})`
-        }));
+        const deviceOptions = devices.map(d => {
+            const name = d.model || d.serial;
+            const link = d.wireless ? 'Wi-Fi' : 'USB';
+            const state = d.state === 'device' ? '' : `, ${d.state}`;
+            return { value: d.serial, aliases: d.aliases || [], label: `${name} (${link}${state})` };
+        });
+
+        // Auto-pick the first ready device for the right pane if it is waiting for one.
+        // This must run before populateSelect, which moves a pane without a device to local.
+        // A phone that connects later (for example over Wi-Fi) is also picked, until the user chooses a device.
+        if (!panes.right.serial && (panes.right.type === 'android' || panes.right.autoPickDevice)) {
+            const firstAuth = devices.find(d => d.state === 'device');
+            if (firstAuth) {
+                panes.right.type = 'android';
+                panes.right.serial = firstAuth.serial;
+                panes.right.path = '/sdcard/';
+                panes.right.autoPickDevice = false;
+            }
+        }
 
         // Helper to populate select
         const populateSelect = (paneId) => {
@@ -133,8 +149,10 @@ async function refreshDevices() {
             if (pane.type === 'local') {
                 select.value = 'local';
             } else if (pane.type === 'android') {
-                const exists = deviceOptions.find(d => d.value === pane.serial);
+                // A duplicate Wi-Fi connection is listed under its other serial (alias)
+                const exists = deviceOptions.find(d => d.value === pane.serial || d.aliases.includes(pane.serial));
                 if (exists) {
+                    pane.serial = exists.value;
                     select.value = pane.serial;
                 } else {
                     // Device gone. Switch to local or show error?
@@ -151,18 +169,6 @@ async function refreshDevices() {
 
         populateSelect('left');
         populateSelect('right');
-
-        // Initial load if not done (e.g. first run)
-        // If first run, left is local, right is android (if dev exists)
-        if (!panes.right.serial && deviceOptions.length > 0 && panes.right.type === 'android') {
-            // Auto-pick first device for right pane if it was waiting for one
-            const firstAuth = devices.find(d => d.state === 'device');
-            if (firstAuth) {
-                panes.right.serial = firstAuth.serial;
-                panes.right.selectElement.value = firstAuth.serial;
-                loadPaneFiles('right');
-            }
-        }
 
         // Always ensure files are loaded/refreshed
         // If we are viewing android files, refresh them just in case.
@@ -181,6 +187,7 @@ function setupPaneSelectListeners(paneId) {
     const pane = panes[paneId];
     pane.selectElement.addEventListener('change', (e) => {
         const val = e.target.value;
+        pane.autoPickDevice = false;
         if (val === 'local') {
             pane.type = 'local';
             pane.serial = null;
@@ -848,14 +855,246 @@ function handleKeyNavigation(e, paneId) {
     }
 }
 
+// Wireless Connection
+
+const wirelessModal = document.getElementById('wireless-modal');
+const wirelessStatus = document.getElementById('wireless-status');
+const wirelessFound = document.getElementById('wireless-found');
+const qrImage = document.getElementById('qr-image');
+const pairHostInput = document.getElementById('pair-host');
+const pairCodeInput = document.getElementById('pair-code');
+const connectHostInput = document.getElementById('connect-host');
+const btnPair = document.getElementById('btn-pair');
+const btnConnect = document.getElementById('btn-connect');
+
+const QR_LIFETIME_MS = 3 * 60 * 1000;
+const PAIRING_TEXT = 'Pairing...';
+let qrSession = null; // { name, startedAt, busy }
+let wirelessPollTimer = null;
+let wirelessBusy = false; // true while a pair or connect request runs
+
+// ipcRenderer.invoke prefixes errors with "Error invoking remote method '...': Error: "
+const ipcErrorText = (e) => String((e && e.message) || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+
+function setWirelessStatus(text, kind = '') {
+    wirelessStatus.textContent = text;
+    wirelessStatus.className = 'wireless-status' + (kind ? ' ' + kind : '');
+}
+
+function isWirelessModalOpen() {
+    return wirelessModal.style.display === 'flex';
+}
+
+function showWirelessTab(tab) {
+    wirelessModal.querySelectorAll('.tab-button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    wirelessModal.querySelectorAll('.tab-panel').forEach(p => {
+        p.style.display = p.dataset.tab === tab ? 'block' : 'none';
+    });
+    if (tab === 'qr' && (!qrSession || Date.now() - qrSession.startedAt > QR_LIFETIME_MS)) {
+        startQrPairing();
+    }
+    if (tab === 'code') pairHostInput.focus();
+    if (tab === 'connect') connectHostInput.focus();
+}
+
+async function startQrPairing() {
+    try {
+        const { name, dataUrl } = await window.electronAPI.qrPairingStart();
+        qrSession = { name, startedAt: Date.now(), busy: false };
+        qrImage.src = dataUrl;
+        qrImage.style.visibility = 'visible';
+        setWirelessStatus('Waiting for the phone to scan the code...');
+    } catch (e) {
+        setWirelessStatus('Could not create the QR code: ' + ipcErrorText(e), 'error');
+    }
+}
+
+function showWirelessModal() {
+    wirelessModal.style.display = 'flex';
+    setWirelessStatus('');
+    showWirelessTab('qr');
+    // Move focus off the panes so arrow keys do not move the file selection behind the dialog
+    wirelessModal.querySelector('.tab-button.active').focus();
+    pollWireless();
+}
+
+function hideWirelessModal() {
+    wirelessModal.style.display = 'none';
+    clearTimeout(wirelessPollTimer);
+    wirelessPollTimer = null;
+    qrSession = null;
+    // Return focus to the panes so keyboard navigation works again
+    panes[activePaneId].element.focus();
+}
+
+// Show a newly connected device in a pane, unless a pane already shows it
+function showDeviceInPane(serial) {
+    if (!serial || panes.left.serial === serial || panes.right.serial === serial) return;
+    const pane = panes.right.type === 'local' ? panes.right : (panes.left.type === 'local' ? panes.left : panes.right);
+    if (![...pane.selectElement.options].some(o => o.value === serial)) return;
+    pane.type = 'android';
+    pane.serial = serial;
+    pane.path = '/sdcard/';
+    pane.selectElement.value = serial;
+    loadPaneFiles(pane.id);
+}
+
+// Runs after a successful pair: connects to the phone and shows it in a pane
+async function handlePairResult(pairResult) {
+    setWirelessStatus('Paired. Connecting to the phone...', 'success');
+    const result = await window.electronAPI.finishPairing(pairResult.guid, pairResult.ip);
+    if (result.connected) {
+        await refreshDevices();
+        showDeviceInPane(result.serial);
+        setWirelessStatus('Paired and connected. You can close this window.', 'success');
+    } else {
+        connectHostInput.value = pairResult.ip ? pairResult.ip + ':' : '';
+        showWirelessTab('connect');
+        setWirelessStatus('Paired, but could not connect yet. Add the port shown on the phone\'s Wireless debugging screen and click Connect.', 'error');
+    }
+}
+
+async function runWirelessAction(button, pendingText, action) {
+    if (wirelessBusy) return;
+    wirelessBusy = true;
+    button.disabled = true;
+    setWirelessStatus(pendingText);
+    try {
+        await action();
+    } catch (e) {
+        setWirelessStatus(ipcErrorText(e), 'error');
+    } finally {
+        wirelessBusy = false;
+        button.disabled = false;
+    }
+}
+
+function pairWithCode() {
+    return runWirelessAction(btnPair, PAIRING_TEXT, async () => {
+        const result = await window.electronAPI.pairDevice(pairHostInput.value, pairCodeInput.value);
+        pairCodeInput.value = '';
+        await handlePairResult(result);
+    });
+}
+
+function connectWireless(hostPort, button = btnConnect) {
+    return runWirelessAction(button, 'Connecting...', async () => {
+        const result = await window.electronAPI.connectDevice(hostPort);
+        await refreshDevices();
+        showDeviceInPane(result.serial);
+        setWirelessStatus('Connected. You can close this window.', 'success');
+    });
+}
+
+async function pairWithQr(service) {
+    qrSession.busy = true;
+    const session = qrSession;
+    setWirelessStatus('Phone found. ' + PAIRING_TEXT);
+    try {
+        const result = await window.electronAPI.qrPairingPair(session.name, service.hostPort);
+        await handlePairResult(result);
+    } catch (e) {
+        setWirelessStatus(ipcErrorText(e) + ' Click New Code to try again.', 'error');
+    } finally {
+        // One pairing attempt per code. A new code may have replaced this one meanwhile.
+        if (qrSession === session) qrSession = null;
+        session.busy = false;
+    }
+}
+
+function renderFoundServices(services) {
+    wirelessFound.innerHTML = '';
+    const connected = new Set([...panes.left.selectElement.options].map(o => o.value));
+    const visible = services.filter(s => s.type === 'pairing' ||
+        !(connected.has(s.name + '._adb-tls-connect._tcp') || connected.has(s.hostPort)));
+    if (visible.length === 0) {
+        wirelessFound.innerHTML = '<div class="empty">None yet. Turn on Wireless debugging on the phone. Some networks block device discovery. In that case, type the address by hand.</div>';
+        return;
+    }
+    visible.forEach(s => {
+        const row = document.createElement('div');
+        row.className = 'found-item';
+        const label = document.createElement('span');
+        label.textContent = `${s.hostPort}  ${s.type === 'pairing' ? 'waiting for pairing' : 'wireless debugging on'}`;
+        const button = document.createElement('button');
+        if (s.type === 'pairing') {
+            button.textContent = 'Use for Pairing';
+            button.onclick = () => {
+                pairHostInput.value = s.hostPort;
+                showWirelessTab('code');
+                pairCodeInput.focus();
+            };
+        } else {
+            button.textContent = 'Connect';
+            button.onclick = () => connectWireless(s.hostPort, button);
+        }
+        row.append(label, button);
+        wirelessFound.appendChild(row);
+    });
+}
+
+// While the dialog is open, look for phones on the network every 2 seconds
+async function pollWireless() {
+    if (!isWirelessModalOpen()) return;
+    try {
+        const services = await window.electronAPI.mdnsServices();
+        // QR pairing services are shown as the QR flow, not in the list
+        renderFoundServices(services.filter(s => !(s.type === 'pairing' && s.name.startsWith('adbft-'))));
+
+        if (qrSession && !qrSession.busy && !wirelessBusy) {
+            if (Date.now() - qrSession.startedAt > QR_LIFETIME_MS) {
+                qrImage.style.visibility = 'hidden';
+                setWirelessStatus('The QR code expired. Click New Code.');
+                qrSession = null;
+            } else {
+                const match = services.find(s => s.type === 'pairing' && s.name === qrSession.name);
+                if (match) pairWithQr(match);
+            }
+        }
+    } catch (e) {
+        console.error('Error polling wireless devices:', e);
+    }
+    if (isWirelessModalOpen()) {
+        wirelessPollTimer = setTimeout(pollWireless, 2000);
+    }
+}
+
+wirelessModal.querySelectorAll('.tab-button').forEach(b => {
+    b.addEventListener('click', () => showWirelessTab(b.dataset.tab));
+});
+document.getElementById('btn-wireless').addEventListener('click', showWirelessModal);
+document.getElementById('btn-help-wireless').addEventListener('click', () => {
+    hideHelpModal();
+    showWirelessModal();
+});
+document.getElementById('close-wireless').addEventListener('click', hideWirelessModal);
+document.getElementById('btn-qr-new').addEventListener('click', startQrPairing);
+btnPair.addEventListener('click', pairWithCode);
+btnConnect.addEventListener('click', () => connectWireless(connectHostInput.value));
+wirelessModal.addEventListener('click', (e) => {
+    if (e.target === wirelessModal) hideWirelessModal();
+});
+
 // Global Shortcuts
 window.addEventListener('keydown', (e) => {
+    if (isWirelessModalOpen()) {
+        if (e.key === 'Escape') hideWirelessModal();
+        if (e.key === 'Enter' && e.target === pairCodeInput) pairWithCode();
+        if (e.key === 'Enter' && e.target === pairHostInput) pairCodeInput.focus();
+        if (e.key === 'Enter' && e.target === connectHostInput) btnConnect.click();
+        return;
+    }
+
     if (renameModal.style.display === 'flex') {
         if (e.key === 'Escape') hideRenameModal();
         if (e.key === 'Enter') btnConfirmRename.click();
         return;
     }
 
+    if (e.key === 'F2') {
+        e.preventDefault();
+        showWirelessModal();
+    }
     if (e.key === 'F3') {
         e.preventDefault();
         performViewEdit(false);
